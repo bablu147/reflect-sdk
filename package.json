@@ -1,0 +1,26 @@
+{
+  "name": "com.reflect.sdk",
+  "version": "2.1.0",
+  "displayName": "Reflect SDK",
+  "description": "Custom mobile measurement SDK for Unity. Collects device & referral data and sends events to a Reflect-compatible server (Cloudflare Worker).",
+  "unity": "2021.3",
+  "unityRelease": "0f1",
+  "keywords": [
+    "attribution",
+    "mmp",
+    "analytics",
+    "unity",
+    "android",
+    "ios"
+  ],
+  "author": "Reflect",
+  "license": "UNLICENSED",
+  "private": true,
+  "samples": [
+    {
+      "displayName": "Basic Usage",
+      "description": "Minimal integration example",
+      "path": "Samples~/BasicUsage"
+    }
+  ]
+}

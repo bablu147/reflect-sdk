@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="com.reflect.sdk">
+
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
+    <!-- Required on Android 13+ to read the Google Advertising ID.
+         Remove this line if your app targets children / COPPA. -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID"/>
+
+    <queries>
+        <!-- Required so PackageManager.getInstallerPackageName works on Android 11+. -->
+        <package android:name="com.android.vending"/>
+    </queries>
+
+    <application />
+</manifest>
