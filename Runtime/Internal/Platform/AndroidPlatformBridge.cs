@@ -52,6 +52,11 @@ namespace Reflect.Internal.Platform
         {
             // No-op on Android.
         }
+
+        public void UpdateSkanConversionValue(int fineValue, string coarseValue, bool lockWindow)
+        {
+            // No-op on Android — SKAN is iOS only.
+        }
     }
 }
 #endif

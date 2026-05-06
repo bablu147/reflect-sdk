@@ -5,11 +5,15 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Security.Cryptography;
+using System.Text;
 using Reflect.Internal;
 using Reflect.Internal.Debug;
 using Reflect.Internal.Platform;
 using UnityEngine;
+using UnityEngine.Networking;
 
 namespace Reflect
 {
@@ -35,8 +39,22 @@ namespace Reflect
         private static ReferralSnapshot _referralSnapshot;
         private static IosTrackingStatus _attStatus = IosTrackingStatus.NotDetermined;
         private static bool _advertisingConsent = true;
+        private static string _consentState = "granted";
         private static readonly Dictionary<string, object> _globalProps = new Dictionary<string, object>();
         private static readonly object _globalPropsLock = new object();
+
+        // ── Attribution check state (Sprint I) ──────────────────────────
+        private static bool _attributionCheckedThisSession;
+        private static long _lastAttributionCheckMs;
+        private const string ATTRIBUTION_CHECK_PREFS_KEY = "reflect_last_attribution_check_ms";
+
+        /// <summary>
+        /// Fired when the server reports a new or changed attribution for this
+        /// install. The dictionary contains keys: attribution_type, partner_slug,
+        /// campaign_name, click_id, attributed_at_ms. Subscribe before calling
+        /// <see cref="Initialize(ReflectConfig)"/> to catch the first callback.
+        /// </summary>
+        public static event Action<Dictionary<string, object>> OnAttributionUpdated;
 
         /// <summary>True when initialized with a null/empty BaseUrl — the SDK runs
         /// locally with the developer overlay and never makes network requests.</summary>
@@ -117,6 +135,12 @@ namespace Reflect
                                        "on-screen. Keep this OFF in release builds (gate on Debug.isDebugBuild).");
                 }
                 ReflectLogger.Info($"Reflect initialized — baseUrl={(config.IsDebugMode ? "(debug / none)" : config.BaseUrl)}, installUuid={InstallUuidStore.Value}");
+
+                // Load persisted consent state from PlayerPrefs.
+                if (PlayerPrefs.HasKey("reflect_consent_state"))
+                {
+                    _consentState = PlayerPrefs.GetString("reflect_consent_state", "granted");
+                }
 
                 if (InstallUuidStore.IsFirstLaunch)
                 {
@@ -199,6 +223,28 @@ namespace Reflect
             EnqueueEvent("subscribe", MergeWithGlobals(props), price, currencyCode, transactionId, productId);
         }
 
+        // ───────────────────────── Ad revenue ────────────────────────────
+
+        /// <summary>Track ad revenue from a mediation platform. Fires _ad_impression event.</summary>
+        public static void TrackAdRevenue(string mediationPlatform, double revenue, string currency,
+            string adFormat = null, string adNetwork = null, string adUnitId = null,
+            string placement = null, string precision = "estimated")
+        {
+            if (!EnsureReady()) return;
+            var props = new Dictionary<string, object>
+            {
+                { "mediation_platform", mediationPlatform },
+                { "revenue", revenue },
+                { "currency", currency ?? "USD" },
+                { "precision", precision ?? "estimated" },
+            };
+            if (adFormat != null) props["ad_format"] = adFormat;
+            if (adNetwork != null) props["ad_network"] = adNetwork;
+            if (adUnitId != null) props["ad_unit_id"] = adUnitId;
+            if (placement != null) props["placement"] = placement;
+            TrackEvent("_ad_impression", props);
+        }
+
         // ───────────────────────── Identity & consent ─────────────────────
 
         /// <summary>
@@ -262,19 +308,39 @@ namespace Reflect
         /// <summary>
         /// Build a new dict containing globals + the per-event props (per-event wins).
         /// Returns null if there are neither globals nor per-event props.
+        /// Snapshots globals under lock, then merges outside the lock to minimize
+        /// contention with SetGlobalProperty calls from other threads.
         /// </summary>
         private static IDictionary<string, object> MergeWithGlobals(IDictionary<string, object> perEvent)
         {
+            Dictionary<string, object> snapshot;
             lock (_globalPropsLock)
             {
                 if (_globalProps.Count == 0) return perEvent;
-                var merged = new Dictionary<string, object>(_globalProps.Count + (perEvent?.Count ?? 0));
-                foreach (var kv in _globalProps) merged[kv.Key] = kv.Value;
-                if (perEvent != null)
-                    foreach (var kv in perEvent) merged[kv.Key] = kv.Value;   // per-event overrides
-                return merged;
+                snapshot = new Dictionary<string, object>(_globalProps);
             }
+            var merged = new Dictionary<string, object>(snapshot.Count + (perEvent?.Count ?? 0));
+            foreach (var kv in snapshot) merged[kv.Key] = kv.Value;
+            if (perEvent != null)
+                foreach (var kv in perEvent) merged[kv.Key] = kv.Value;   // per-event overrides
+            return merged;
         }
+
+        /// <summary>
+        /// Set the user's data-collection consent state. Persists across sessions
+        /// via PlayerPrefs. The value is attached to every event as <c>consent_state</c>.
+        /// </summary>
+        /// <param name="granted">true = "granted", false = "denied".</param>
+        public static void SetConsent(bool granted)
+        {
+            _consentState = granted ? "granted" : "denied";
+            PlayerPrefs.SetString("reflect_consent_state", _consentState);
+            PlayerPrefs.Save();
+            ReflectLogger.Info($"Consent state set to '{_consentState}'");
+        }
+
+        /// <summary>Returns the current consent state — "granted" or "denied".</summary>
+        public static string GetConsent() => _consentState;
 
         /// <summary>
         /// Signals user has granted (or denied) consent for advertising identifiers.
@@ -394,6 +460,83 @@ namespace Reflect
                          revenue: null, currency: null, txId: null, productId: null);
         }
 
+        // ───────────────────────── SKAN Conversion Value ────────────────────
+
+        /// <summary>
+        /// Update the SKAN conversion value. On iOS 17.4+ this uses AdAttributionKit;
+        /// on iOS 16.1+ uses SKAdNetwork 4.0; falls back to legacy SKAN on older iOS.
+        /// No-op on Android and Editor (Editor logs the call).
+        ///
+        /// <paramref name="fineValue"/>: 0-63 fine conversion value.
+        /// <paramref name="coarseValue"/>: "low", "medium", "high", or null for none (SKAN 4.0+).
+        /// <paramref name="lockWindow"/>: if true, lock the current postback window immediately.
+        /// <paramref name="onComplete"/>: optional callback — (success, errorMessage).
+        /// </summary>
+        public static void UpdateConversionValue(int fineValue, string coarseValue = null,
+                                                   bool lockWindow = false,
+                                                   Action<bool, string> onComplete = null)
+        {
+            if (!EnsureReady())
+            {
+                onComplete?.Invoke(false, "not_initialized");
+                return;
+            }
+            if (fineValue < 0 || fineValue > 63)
+            {
+                ReflectLogger.Warn($"UpdateConversionValue: fineValue {fineValue} out of range 0-63");
+                onComplete?.Invoke(false, "fine_value_out_of_range");
+                return;
+            }
+
+            _receiver.PendingSkanCvCallback = onComplete;
+            _platform.UpdateSkanConversionValue(fineValue, coarseValue ?? "", lockWindow);
+        }
+
+        // ───────────────────────── Push token registration ────────────────
+
+        /// <summary>
+        /// Register a push notification token with the Reflect server.
+        /// Fires an internal <c>_push_token</c> event and POSTs the token
+        /// directly to <c>{BaseUrl}/push-token</c>.
+        ///
+        /// <paramref name="token"/>: the device push token (APNs or FCM).
+        /// <paramref name="provider"/>: "apns" or "fcm". If null, defaults to
+        /// "apns" on iOS and "fcm" on Android.
+        /// </summary>
+        public static void RegisterPushToken(string token, string provider = null)
+        {
+            if (!EnsureReady()) return;
+            if (string.IsNullOrEmpty(token))
+            {
+                ReflectLogger.Warn("RegisterPushToken: token is null/empty — ignoring.");
+                return;
+            }
+
+            // Default provider based on platform.
+            if (string.IsNullOrEmpty(provider))
+            {
+                provider = Application.platform == RuntimePlatform.IPhonePlayer ? "apns" : "fcm";
+            }
+
+            // 1) Fire an internal _push_token event so the event stream records it.
+            var props = new Dictionary<string, object>(2)
+            {
+                { "token",    token },
+                { "provider", provider },
+            };
+            EnqueueEvent("_push_token", MergeWithGlobals(props),
+                         revenue: null, currency: null, txId: null, productId: null);
+
+            // 2) Direct HTTP POST to /push-token so the server stores it immediately.
+            if (!_config.IsDebugMode)
+            {
+                var platform = _deviceSnapshot?.Os ?? (Application.platform == RuntimePlatform.IPhonePlayer ? "iOS" : "Android");
+                var runner = ReflectCallbackReceiver.Ensure();
+                runner.StartCoroutine(_dispatcher.SendPushToken(
+                    _config.AppKey, InstallUuidStore.Value, platform, token, provider));
+            }
+        }
+
         // ───────────────────────── Privacy / right-to-be-forgotten ─────────
 
         /// <summary>
@@ -465,6 +608,7 @@ namespace Reflect
                 UserId        = _userId,
                 SdkVersion    = SdkVersion.Value,
                 AttStatus     = _attStatus,
+                ConsentState  = _consentState,
                 Device        = _deviceSnapshot,
                 Referral      = _referralSnapshot,
                 Revenue       = revenue,
@@ -481,6 +625,140 @@ namespace Reflect
 
             ReflectLogger.Info($"Enqueued '{name}' (queue={_queue.Count})");
             _dispatcher.RequestFlushSoon();
+
+            // Sprint I: on the first app_open of this session, poll the server
+            // for attribution changes so the game can react in real time.
+            if (name == "app_open" && !_attributionCheckedThisSession && !_config.IsDebugMode)
+            {
+                _attributionCheckedThisSession = true;
+                _lastAttributionCheckMs = PlayerPrefs.HasKey(ATTRIBUTION_CHECK_PREFS_KEY)
+                    ? long.Parse(PlayerPrefs.GetString(ATTRIBUTION_CHECK_PREFS_KEY, "0"))
+                    : 0;
+                var runner = ReflectCallbackReceiver.Ensure();
+                runner.StartCoroutine(AttributionCheckCo());
+            }
+        }
+
+        // ── Attribution check coroutine (Sprint I) ─────────────────────
+        // Polls GET /attribution/check once per session on app_open. If the
+        // server reports a newer attribution row, fires OnAttributionUpdated
+        // and persists the new watermark so subsequent sessions only see truly
+        // new changes.
+
+        private static IEnumerator AttributionCheckCo()
+        {
+            // Build query string.
+            var installUuid = InstallUuidStore.Value;
+            var queryString = "install_uuid=" + Uri.EscapeDataString(installUuid)
+                            + "&since=" + _lastAttributionCheckMs;
+
+            // HMAC-sign the query string (same as the server expects).
+            string signature = null;
+            if (!string.IsNullOrEmpty(_config.SigningSecret))
+            {
+                using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(_config.SigningSecret)))
+                {
+                    var sigBytes = hmac.ComputeHash(Encoding.UTF8.GetBytes(queryString));
+                    var sb = new StringBuilder(sigBytes.Length * 2);
+                    for (int i = 0; i < sigBytes.Length; i++) sb.Append(sigBytes[i].ToString("x2"));
+                    signature = sb.ToString();
+                }
+            }
+
+            var url = _config.BaseUrl + "/attribution/check?" + queryString;
+
+            using (var req = UnityWebRequest.Get(url))
+            {
+                req.SetRequestHeader("X-Reflect-Sdk", SdkVersion.Value);
+                if (!string.IsNullOrEmpty(_config.AppKey))
+                    req.SetRequestHeader("X-Reflect-App-Key", _config.AppKey);
+                if (signature != null)
+                    req.SetRequestHeader("X-Reflect-Signature", signature);
+                req.timeout = 15;
+
+                yield return req.SendWebRequest();
+
+#if UNITY_2020_1_OR_NEWER
+                bool isError = req.result != UnityWebRequest.Result.Success;
+#else
+                bool isError = req.isNetworkError || req.isHttpError;
+#endif
+                if (isError || req.responseCode < 200 || req.responseCode >= 300)
+                {
+                    ReflectLogger.Warn($"Attribution check failed ({req.responseCode}): {req.error}");
+                    yield break;
+                }
+
+                // Parse JSON response.
+                var responseText = req.downloadHandler != null ? req.downloadHandler.text : null;
+                if (string.IsNullOrEmpty(responseText))
+                {
+                    yield break;
+                }
+
+                var parsed = MiniJson.Deserialize(responseText) as IDictionary<string, object>;
+                if (parsed == null)
+                {
+                    ReflectLogger.Warn("Attribution check: failed to parse response JSON.");
+                    yield break;
+                }
+
+                // Check the 'changed' flag.
+                object changedObj;
+                if (!parsed.TryGetValue("changed", out changedObj) || !(changedObj is bool))
+                {
+                    yield break;
+                }
+                bool changed = (bool)changedObj;
+                if (!changed)
+                {
+                    ReflectLogger.Info("Attribution check: no change.");
+                    yield break;
+                }
+
+                // Extract the data payload.
+                object dataObj;
+                if (!parsed.TryGetValue("data", out dataObj))
+                {
+                    yield break;
+                }
+                var dataDict = dataObj as IDictionary<string, object>;
+                if (dataDict == null)
+                {
+                    yield break;
+                }
+
+                // Build a clean dictionary for the public event.
+                var result = new Dictionary<string, object>();
+                foreach (var kv in dataDict)
+                {
+                    result[kv.Key] = kv.Value;
+                }
+
+                // Persist the new watermark so the next session only sees newer changes.
+                object attrAtMs;
+                if (dataDict.TryGetValue("attributed_at_ms", out attrAtMs))
+                {
+                    long newMs = 0;
+                    if (attrAtMs is long)   newMs = (long)attrAtMs;
+                    else if (attrAtMs is double) newMs = (long)(double)attrAtMs;
+
+                    if (newMs > _lastAttributionCheckMs)
+                    {
+                        _lastAttributionCheckMs = newMs;
+                        PlayerPrefs.SetString(ATTRIBUTION_CHECK_PREFS_KEY, newMs.ToString());
+                        PlayerPrefs.Save();
+                    }
+                }
+
+                ReflectLogger.Info("Attribution check: change detected — firing OnAttributionUpdated.");
+
+                try { OnAttributionUpdated?.Invoke(result); }
+                catch (Exception ex)
+                {
+                    ReflectLogger.Error($"OnAttributionUpdated handler threw: {ex}");
+                }
+            }
         }
 
         private static void AttachDebugOverlay()
@@ -574,14 +852,18 @@ namespace Reflect
         // throwing in a tight loop — protects R2 + queue from runaway logs.
         private static double _lastCrashAtMs;
         private const double CRASH_RATE_LIMIT_MS = 60_000;
+        private static readonly object _crashThrottleLock = new object();
 
         private static void OnUnityLogMessage(string condition, string stack, LogType type)
         {
             if (type != LogType.Exception && type != LogType.Assert) return;
 
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            if (now - _lastCrashAtMs < CRASH_RATE_LIMIT_MS) return;
-            _lastCrashAtMs = now;
+            lock (_crashThrottleLock)
+            {
+                if (now - _lastCrashAtMs < CRASH_RATE_LIMIT_MS) return;
+                _lastCrashAtMs = now;
+            }
 
             // Trim aggressively — server caps event body size and we don't want
             // a 50-line stack hogging R2.

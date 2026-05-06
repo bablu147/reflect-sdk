@@ -17,9 +17,11 @@ namespace Reflect
         internal Action<IosTrackingStatus> OnAttStatusHandler;
         internal Action<bool>             OnPauseHandler;
         internal Action                   OnTickHandler;
+        internal Action<string>           OnSkanCvUpdateHandler;
 
         internal bool PendingInstallEvent;
         internal Action<IosTrackingStatus> PendingAttCallback;
+        internal Action<bool, string>     PendingSkanCvCallback;
 
         private static ReflectCallbackReceiver _instance;
 
@@ -73,6 +75,20 @@ namespace Reflect
             if (!int.TryParse(code, out parsed)) parsed = (int)IosTrackingStatus.Unavailable;
             var status = (IosTrackingStatus)parsed;
             OnAttStatusHandler?.Invoke(status);
+        }
+
+        public void OnSkanCvUpdateResult(string result)
+        {
+            bool ok = result == "ok";
+            string error = ok ? null : (result.StartsWith("error:") ? result.Substring(6) : result);
+            if (!ok) ReflectLogger.Warn($"SKAN CV update failed: {error}");
+            else ReflectLogger.Info("SKAN CV update succeeded.");
+
+            OnSkanCvUpdateHandler?.Invoke(result);
+
+            var cb = PendingSkanCvCallback;
+            PendingSkanCvCallback = null;
+            cb?.Invoke(ok, error);
         }
 
         public void OnNativeError(string message)

@@ -76,9 +76,11 @@ namespace Reflect.Internal
                 case bool _:
                 case int _:
                 case long _:
-                case float _:
-                case double _:
                     return v;
+                case float f:
+                    return float.IsInfinity(f) || float.IsNaN(f) ? (object)0f : v;
+                case double d:
+                    return double.IsInfinity(d) || double.IsNaN(d) ? (object)0d : v;
                 case DateTime dt:
                     return dt.ToUniversalTime().ToString("o");   // ISO-8601
                 case DateTimeOffset dto:

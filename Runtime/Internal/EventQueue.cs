@@ -80,8 +80,13 @@ namespace Reflect.Internal
                         if (File.Exists(_filePath)) File.Delete(_filePath);
                         return;
                     }
-                    using (var w = new StreamWriter(_filePath, false))
+                    // Write to a temp file then rename to avoid corruption if
+                    // the app is killed mid-write.
+                    var tmpPath = _filePath + ".tmp";
+                    using (var w = new StreamWriter(tmpPath, false))
                         foreach (var s in _items) w.WriteLine(s);
+                    if (File.Exists(_filePath)) File.Delete(_filePath);
+                    File.Move(tmpPath, _filePath);
                 }
                 ReflectLogger.Info($"Persisted {Count} events to disk.");
             }

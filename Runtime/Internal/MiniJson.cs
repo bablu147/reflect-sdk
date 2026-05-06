@@ -118,7 +118,8 @@ namespace Reflect.Internal
                                     if (hc == -1) return null;
                                     hex[i] = (char)hc;
                                 }
-                                sb.Append((char)Convert.ToInt32(new string(hex), 16));
+                                try { sb.Append((char)Convert.ToInt32(new string(hex), 16)); }
+                                catch (FormatException) { sb.Append('\uFFFD'); }
                                 break;
                         }
                     }

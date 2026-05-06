@@ -16,6 +16,7 @@ namespace Reflect
         public string UserId;
         public string SdkVersion;
         public IosTrackingStatus AttStatus;
+        public string ConsentState;
         public DeviceSnapshot  Device;
         public ReferralSnapshot Referral;
         public double? Revenue;
@@ -36,6 +37,7 @@ namespace Reflect
             JsonWriter.Kv(sb, "user_id", UserId);         sb.Append(',');
             JsonWriter.Kv(sb, "sdk_version", SdkVersion); sb.Append(',');
             JsonWriter.Kv(sb, "att_status", AttStatus.ToString()); sb.Append(',');
+            JsonWriter.Kv(sb, "consent_state", ConsentState ?? "granted"); sb.Append(',');
 
             // Device object
             sb.Append("\"device\":");

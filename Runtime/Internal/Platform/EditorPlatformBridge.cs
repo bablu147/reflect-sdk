@@ -76,6 +76,14 @@ namespace Reflect.Internal.Platform
             if (go != null) go.SendMessage("OnAttStatusCode", "99"); // Unavailable
         }
 
+        public void UpdateSkanConversionValue(int fineValue, string coarseValue, bool lockWindow)
+        {
+            ReflectLogger.Info($"Editor: UpdateSkanConversionValue({fineValue}, {coarseValue}, {lockWindow}) — no-op");
+            if (string.IsNullOrEmpty(_receiver)) return;
+            var go = GameObject.Find(_receiver);
+            if (go != null) go.SendMessage("OnSkanCvUpdateResult", "ok");
+        }
+
         private static string ConnectionType()
         {
             switch (Application.internetReachability)

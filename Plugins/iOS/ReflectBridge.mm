@@ -22,6 +22,19 @@
 #define REFLECT_HAS_ADSERVICES 1
 #endif
 
+// AdAttributionKit is iOS 17.4+ — replaces SKAdNetwork for conversion value updates.
+#if __has_include(<AdAttributionKit/AdAttributionKit.h>)
+#import <AdAttributionKit/AdAttributionKit.h>
+#define REFLECT_HAS_ADATTRIBUTIONKIT 1
+#endif
+
+// SKAdNetwork (legacy) — iOS 11.3+ for updateConversionValue, iOS 15.4+ for
+// updatePostbackConversionValue. Used as fallback when AdAttributionKit unavailable.
+#if __has_include(<StoreKit/SKAdNetwork.h>)
+#import <StoreKit/SKAdNetwork.h>
+#define REFLECT_HAS_SKADNETWORK 1
+#endif
+
 #import "ReflectBridge.h"
 
 // Unity's UnitySendMessage shim. Declared extern so we don't need the Unity headers.
@@ -234,6 +247,91 @@ void _reflect_request_att(void) {
     }
 #endif
     SendToUnity(@"OnAttStatusCode", @"99"); // Unavailable on pre-iOS 14.
+}
+
+// ─── SKAN / AdAttributionKit conversion value update ─────────────────
+// Priority: AdAttributionKit (iOS 17.4+) > SKAdNetwork 4.0 (iOS 16.1+)
+//         > SKAdNetwork legacy (iOS 15.4+) > SKAdNetwork 11.3+ (fine only).
+//
+// coarseValue: "low", "medium", "high", or empty string (no coarse).
+// lockWindow:  if true, locks the current postback window immediately.
+//
+// Result delivered via OnSkanCvUpdateResult: "ok" or "error:<message>".
+
+void _reflect_update_conversion_value(int fineValue, const char* coarseValue, bool lockWindow) {
+    NSString* coarse = coarseValue ? [NSString stringWithUTF8String:coarseValue] : @"";
+
+#if REFLECT_HAS_ADATTRIBUTIONKIT
+    // AdAttributionKit (iOS 17.4+) — preferred path.
+    if (@available(iOS 17.4, *)) {
+        AACoarseConversionValue coarseCV = nil;
+        if ([coarse isEqualToString:@"high"])   coarseCV = AACoarseConversionValueHigh;
+        else if ([coarse isEqualToString:@"medium"]) coarseCV = AACoarseConversionValueMedium;
+        else if ([coarse isEqualToString:@"low"])    coarseCV = AACoarseConversionValueLow;
+
+        [AAAttribution updateConversionValue:fineValue
+                         coarseConversionValue:coarseCV
+                                  lockPostback:lockWindow
+                             completionHandler:^(NSError* _Nullable err) {
+            if (err) {
+                NSString* msg = [NSString stringWithFormat:@"error:%@", err.localizedDescription];
+                dispatch_async(dispatch_get_main_queue(), ^{ SendToUnity(@"OnSkanCvUpdateResult", msg); });
+            } else {
+                dispatch_async(dispatch_get_main_queue(), ^{ SendToUnity(@"OnSkanCvUpdateResult", @"ok"); });
+            }
+        }];
+        return;
+    }
+#endif
+
+#if REFLECT_HAS_SKADNETWORK
+    // SKAdNetwork 4.0 (iOS 16.1+) — updatePostbackConversionValue:coarseValue:lockWindow:
+    if (@available(iOS 16.1, *)) {
+        SKAdNetworkCoarseConversionValue coarseCV = nil;
+        if ([coarse isEqualToString:@"high"])   coarseCV = SKAdNetworkCoarseConversionValueHigh;
+        else if ([coarse isEqualToString:@"medium"]) coarseCV = SKAdNetworkCoarseConversionValueMedium;
+        else if ([coarse isEqualToString:@"low"])    coarseCV = SKAdNetworkCoarseConversionValueLow;
+
+        [SKAdNetwork updatePostbackConversionValue:fineValue
+                                coarseValue:coarseCV
+                                 lockWindow:lockWindow
+                          completionHandler:^(NSError* _Nullable err) {
+            if (err) {
+                NSString* msg = [NSString stringWithFormat:@"error:%@", err.localizedDescription];
+                dispatch_async(dispatch_get_main_queue(), ^{ SendToUnity(@"OnSkanCvUpdateResult", msg); });
+            } else {
+                dispatch_async(dispatch_get_main_queue(), ^{ SendToUnity(@"OnSkanCvUpdateResult", @"ok"); });
+            }
+        }];
+        return;
+    }
+
+    // SKAdNetwork legacy (iOS 15.4+) — updatePostbackConversionValue: (fine only, no coarse/lock)
+    if (@available(iOS 15.4, *)) {
+        [SKAdNetwork updatePostbackConversionValue:fineValue completionHandler:^(NSError* _Nullable err) {
+            if (err) {
+                NSString* msg = [NSString stringWithFormat:@"error:%@", err.localizedDescription];
+                dispatch_async(dispatch_get_main_queue(), ^{ SendToUnity(@"OnSkanCvUpdateResult", msg); });
+            } else {
+                dispatch_async(dispatch_get_main_queue(), ^{ SendToUnity(@"OnSkanCvUpdateResult", @"ok"); });
+            }
+        }];
+        return;
+    }
+
+    // SKAdNetwork 2.0 (iOS 11.3+) — deprecated updateConversionValue: (no completion handler)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    if (@available(iOS 11.3, *)) {
+        [SKAdNetwork updateConversionValue:fineValue];
+        dispatch_async(dispatch_get_main_queue(), ^{ SendToUnity(@"OnSkanCvUpdateResult", @"ok"); });
+        return;
+    }
+#pragma clang diagnostic pop
+#endif
+
+    // No SKAN API available.
+    dispatch_async(dispatch_get_main_queue(), ^{ SendToUnity(@"OnSkanCvUpdateResult", @"error:unsupported"); });
 }
 
 } // extern "C"

@@ -21,6 +21,16 @@ namespace Reflect.Internal.Platform
 
         /// <summary>iOS only — show ATT prompt. Result via <c>OnAttStatusCode</c>. No-op elsewhere.</summary>
         void RequestIosTracking();
+
+        /// <summary>
+        /// Update the SKAN conversion value. Uses AdAttributionKit on iOS 17.4+,
+        /// SKAdNetwork 4.0 on iOS 16.1+, or legacy SKAN on older versions.
+        /// Result via <c>OnSkanCvUpdateResult</c>. No-op on Android/Editor.
+        /// </summary>
+        /// <param name="fineValue">Fine conversion value (0-63).</param>
+        /// <param name="coarseValue">"low", "medium", "high", or empty for none.</param>
+        /// <param name="lockWindow">If true, lock the current postback window.</param>
+        void UpdateSkanConversionValue(int fineValue, string coarseValue, bool lockWindow);
     }
 
     internal static class PlatformBridgeFactory

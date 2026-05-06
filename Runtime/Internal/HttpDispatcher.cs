@@ -23,6 +23,7 @@ namespace Reflect.Internal
         private float _nextAllowedAt;
         private int _backoffStep;
         private static readonly float[] BackoffSeconds = { 1f, 4f, 15f, 60f, 300f, 900f };
+        private static readonly System.Random _jitterRng = new System.Random();
 
         public HttpDispatcher(ReflectConfig config, EventQueue queue)
         {
@@ -91,6 +92,7 @@ namespace Reflect.Internal
             {
                 signature = Hmac(bytes, _config.SigningSecret);
                 headerList.Add(new KeyValuePair<string, string>("X-Reflect-Signature", signature));
+                headerList.Add(new KeyValuePair<string, string>("X-Reflect-Signature-Version", "1"));
             }
 
             // Network log shows the original JSON (readable) but the on-wire
@@ -140,14 +142,18 @@ namespace Reflect.Internal
                 }
                 else
                 {
-                    // Transient — requeue + back off.
+                    // Transient — requeue + back off with jitter to avoid thundering herd.
                     _queue.Requeue(batch);
                     _backoffStep = Math.Min(_backoffStep + 1, BackoffSeconds.Length - 1);
-                    _nextAllowedAt = Time.realtimeSinceStartup + BackoffSeconds[_backoffStep];
-                    ReflectLogger.Warn($"Send failed ({code} / {req.error}) — retry in {BackoffSeconds[_backoffStep]}s");
+                    float baseDelay = BackoffSeconds[_backoffStep];
+                    float jitter;
+                    lock (_jitterRng) { jitter = (float)(0.5 + _jitterRng.NextDouble() * 0.5); }
+                    float delay = baseDelay * jitter;
+                    _nextAllowedAt = Time.realtimeSinceStartup + delay;
+                    ReflectLogger.Warn($"Send failed ({code} / {req.error}) — retry in {delay:F1}s");
                     ReflectDebugEventLog.MarkBatchStatus(ExtractEventIds(batch),
                         ReflectDebugEventLog.Status.Failed,
-                        $"HTTP {code}: {req.error} — retrying in {BackoffSeconds[_backoffStep]}s");
+                        $"HTTP {code}: {req.error} — retrying in {delay:F1}s");
 
                     // code == 0 typically means no response at all (DNS / TLS / offline);
                     // anything ≥500 is a proper server error.
@@ -256,6 +262,69 @@ namespace Reflect.Internal
                     onComplete?.Invoke(false);
                 }
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  Push token registration — POST /push-token
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// POST the push notification token to <c>{BaseUrl}/push-token</c>.
+        /// Fire-and-forget — failures are logged but not retried (the token
+        /// is also recorded as a <c>_push_token</c> event via the normal queue).
+        /// </summary>
+        public IEnumerator SendPushToken(string appKey, string installUuid,
+                                          string platform, string token, string provider)
+        {
+            if (_config.IsDebugMode || string.IsNullOrEmpty(_config.BaseUrl))
+                yield break;
+
+            var body = "{" +
+                "\"app_key\":\""      + EscapeJsonString(appKey)      + "\"," +
+                "\"install_uuid\":\"" + EscapeJsonString(installUuid) + "\"," +
+                "\"platform\":\""     + EscapeJsonString(platform)    + "\"," +
+                "\"token\":\""        + EscapeJsonString(token)       + "\"," +
+                "\"provider\":\""     + EscapeJsonString(provider)    + "\"" +
+            "}";
+            var bytes = Encoding.UTF8.GetBytes(body);
+            var url = _config.BaseUrl + "/push-token";
+
+            using (var req = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST))
+            {
+                req.uploadHandler   = new UploadHandlerRaw(bytes) { contentType = "application/json" };
+                req.downloadHandler = new DownloadHandlerBuffer();
+                req.SetRequestHeader("Content-Type",   "application/json");
+                req.SetRequestHeader("X-Reflect-Sdk",  SdkVersion.Value);
+                if (!string.IsNullOrEmpty(_config.CompanyKey)) req.SetRequestHeader("X-Reflect-Company-Key", _config.CompanyKey);
+                if (!string.IsNullOrEmpty(_config.AppKey))     req.SetRequestHeader("X-Reflect-App-Key",     _config.AppKey);
+                if (!string.IsNullOrEmpty(_config.SigningSecret))
+                    req.SetRequestHeader("X-Reflect-Signature", Hmac(bytes, _config.SigningSecret));
+                req.timeout = 30;
+
+                ReflectLogger.Info($"POST {url} (push-token registration)");
+                yield return req.SendWebRequest();
+
+#if UNITY_2020_1_OR_NEWER
+                bool ok = req.result == UnityWebRequest.Result.Success;
+#else
+                bool ok = !req.isNetworkError && !req.isHttpError;
+#endif
+                if (ok && req.responseCode >= 200 && req.responseCode < 300)
+                {
+                    ReflectLogger.Info("Push token registered on server.");
+                }
+                else
+                {
+                    ReflectLogger.Warn($"Push token registration failed ({req.responseCode}): {req.error}");
+                }
+            }
+        }
+
+        /// <summary>Minimal JSON string escaping for hand-built JSON payloads.</summary>
+        private static string EscapeJsonString(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r").Replace("\t", "\\t");
         }
 
         /// <summary>Gzip-compress a byte array. Used for batch bodies ≥10 events.</summary>

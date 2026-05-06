@@ -31,6 +31,7 @@ final class DeviceInfoCollector {
         JSONObject j = new JSONObject();
 
         // ── Identifiers ────────────────────────────────────────────────
+        j.put("ad_consent", adConsent);
         if (adConsent) {
             try {
                 AdvertisingIdClient.Info info = AdvertisingIdClient.getAdvertisingIdInfo(ctx);
@@ -43,7 +44,8 @@ final class DeviceInfoCollector {
                 j.put("lat_enabled", false);
             }
         } else {
-            j.put("lat_enabled", true);
+            // Consent not granted — we cannot query LAT status without consent,
+            // so omit lat_enabled rather than reporting a misleading value.
         }
         try {
             String ssaid = Settings.Secure.getString(ctx.getContentResolver(),
