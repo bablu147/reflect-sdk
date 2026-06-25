@@ -382,6 +382,30 @@ Questions about licensing, contact your Reflect account manager.
 
 ---
 
+## 9a. What's new in v2.2
+
+Adjust-level data-collection parity + a hard fix for the #1 integration failure.
+
+- **Release builds can no longer silently break attribution.** A Unity Editor
+  post-processor auto-applies the ProGuard keep-rules + Google deps to the Android
+  build, so R8 can never strip the native bridge (the failure that made installs
+  vanish in minified Play Store builds). No manual *Custom Proguard File* step.
+- **`app_install` is never black-holed** — a configurable timeout fallback fires it
+  even if native device/referral collection stalls; `app_version` is captured in
+  pure C# so it survives native failures.
+- **Broad signal parity:** device taxonomy (type/os_build/screen/ui_mode/…), App Set
+  ID, Fire ID, GAID source/attempt, China IMEI/MEID/OAID (opt-in), session length,
+  `environment` (prod/sandbox), foreground state, push token, external device id.
+- **New runtime APIs:** `SetPushToken`, `SetExternalDeviceId`, `SetEnabled`,
+  `SetOfflineMode`, `SetThirdPartySharing`, global partner parameters (see §9b).
+- **Server-side deferred deep-link resolution** (fingerprint match) + SKAN
+  auto-registration on launch.
+- All new identifiers are consent-gated and scrubbed server-side on denial.
+
+Upgrade: just bump the package tag — no API breakages; existing calls keep working.
+
+---
+
 ## 9b. What's new in v2.1
 
 This release closes the biggest MMP-parity gaps from the v2.0 audit. Every

@@ -1094,7 +1094,7 @@ namespace Reflect
     internal static class SdkVersion
     {
         /// <summary>Semver string. Bump on every release.</summary>
-        public const string Value = "2.1.0";
+        public const string Value = "2.2.0";
 
         /// <summary>Human-readable tag used in logs + the debug overlay header.</summary>
         public const string FullTag = "Reflect SDK v" + Value;
