@@ -17,14 +17,14 @@ namespace Reflect.Internal.Platform
             }
         }
 
-        public void Initialize(string unityReceiverName, bool advertisingConsent)
+        public void Initialize(string unityReceiverName, bool advertisingConsent, bool collectImei, bool collectOaid)
         {
             try
             {
                 using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
                 using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
                 {
-                    Bridge.CallStatic("initialize", activity, unityReceiverName, advertisingConsent);
+                    Bridge.CallStatic("initialize", activity, unityReceiverName, advertisingConsent, collectImei, collectOaid);
                 }
             }
             catch (System.Exception ex) { ReflectLogger.Error($"Android initialize failed: {ex}"); }

@@ -37,11 +37,30 @@ namespace Reflect
         private static string _userId;
         private static DeviceSnapshot _deviceSnapshot;
         private static ReferralSnapshot _referralSnapshot;
+        // Captured once at Initialize on the main thread (UnityEngine.Application
+        // must be read from the main thread). Pure-C# source for app_version so it
+        // survives even if the native device collector is stripped/stalls.
+        private static string _appVersion;
+        // Adjust-parity envelope signals (pure C#). is_foreground tracks lifecycle;
+        // push_token is set by the host app via SetPushToken (no FCM/APNS dependency
+        // bundled — the app already owns its token).
+        private static bool   _isForeground = true;
+        private static string _pushToken;
+        private static string _externalDeviceId;
+        private static bool   _enabled = true;            // Adjust: setEnabled (pause/resume all tracking)
+        private static bool   _thirdPartySharing = true;  // Adjust: third-party sharing opt-in
+        // Start of the current foreground session (epoch ms) so session_end can
+        // report session_length_ms — feeds aggregates_sessions.total_active_ms.
+        private static long   _sessionStartMs;
         private static IosTrackingStatus _attStatus = IosTrackingStatus.NotDetermined;
         private static bool _advertisingConsent = true;
         private static string _consentState = "granted";
         private static readonly Dictionary<string, object> _globalProps = new Dictionary<string, object>();
         private static readonly object _globalPropsLock = new object();
+        // Adjust parity: partner_params — forwarded to ad-network partners, kept
+        // separate from callback/global props.
+        private static readonly Dictionary<string, object> _partnerParams = new Dictionary<string, object>();
+        private static readonly object _partnerParamsLock = new object();
 
         // ── Attribution check state (Sprint I) ──────────────────────────
         private static bool _attributionCheckedThisSession;
@@ -87,6 +106,10 @@ namespace Reflect
             config.Validate();
 
             _config = config;
+            // Capture app version on the main thread (Application.* is main-thread
+            // only). Pure C# so it's attached to every event — including the
+            // first-launch app_install — regardless of native device collection.
+            _appVersion = Application.version;
             // Any time the overlay is on we force logging so its Logs tab is useful.
             ReflectLogger.Enabled = config.EnableLogging || config.IsOverlayEnabled;
 
@@ -110,7 +133,7 @@ namespace Reflect
                 _advertisingConsent = !config.RequireAdvertisingConsent;
 
                 // Kick off async native collection.
-                _platform.Initialize(_receiver.gameObject.name, _advertisingConsent);
+                _platform.Initialize(_receiver.gameObject.name, _advertisingConsent, config.CollectImei, config.CollectOaid);
                 _platform.CollectDeviceInfo();
                 _platform.CollectReferral();
 
@@ -146,13 +169,50 @@ namespace Reflect
                 {
                     // Actual app_install event will be fired once device info + referral arrive.
                     _receiver.PendingInstallEvent = true;
+                    // Backstop: if native device/referral collection stalls or was
+                    // stripped from a release build, force-fire app_install after
+                    // the configured timeout so an install is never black-holed.
+                    _receiver.StartCoroutine(InstallTimeoutCo(config.InstallEventTimeoutSeconds));
+
+                    // Deferred deep link: ask the server to fingerprint-match this
+                    // install to a recent click's deep_link_path (covers iOS /
+                    // probabilistic / referrer-less installs the `dl` param misses).
+                    if (config.AutoResolveDeferredDeepLink && !config.IsDebugMode)
+                    {
+                        _receiver.StartCoroutine(_dispatcher.ResolveDeferredDeepLink(
+                            config.AppKey, InstallUuidStore.Value, path =>
+                            {
+                                if (!string.IsNullOrEmpty(path))
+                                    DispatchDeepLink(new DeepLinkData
+                                    {
+                                        Url    = path,
+                                        Path   = ExtractPath(path),
+                                        Source = DeepLinkSource.Deferred,
+                                    });
+                            }));
+                    }
                 }
 
                 if (config.AutoSessionTracking)
+                {
+                    _sessionStartMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     TrackEvent("app_open");
+                }
 
                 if (config.AutoRequestIosTracking && Application.platform == RuntimePlatform.IPhonePlayer)
                     RequestIosTracking(null);
+
+                // Arm SKAdNetwork on launch. Apple requires the app to call
+                // updatePostbackConversionValue (iOS 16.1+) / registerApp (legacy)
+                // ONCE or the SKAN attribution timer never starts and SKAN-driven
+                // installs are never reported. We do it automatically with an
+                // initial conversion value of 0; the operator can refine it later
+                // via UpdateConversionValue. No-op on Android/Editor.
+                if (config.AutoRegisterSkan && !config.IsDebugMode
+                    && Application.platform == RuntimePlatform.IPhonePlayer)
+                {
+                    _platform.UpdateSkanConversionValue(0, "", false);
+                }
             }
             catch (Exception ex)
             {
@@ -170,6 +230,8 @@ namespace Reflect
         public static void TrackEvent(string name, IDictionary<string, object> props)
         {
             if (!EnsureReady()) return;
+            // Adjust parity: when disabled via SetEnabled(false), record nothing.
+            if (!_enabled) return;
 
             // Validate + clean before we waste queue slots / R2 bytes / D1 inserts on bad data.
             // The server enforces the same limits — this just makes failures visible at dev time.
@@ -273,6 +335,99 @@ namespace Reflect
                              revenue: null, currency: null, txId: null, productId: null);
             }
             ReflectLogger.Info($"UserId set to '{userId ?? "(null)"}'");
+        }
+
+        /// <summary>
+        /// Set the device push notification token (FCM on Android, APNS on iOS).
+        /// Pass the token your app already obtains from Firebase / APNS — the SDK
+        /// does not bundle a messaging dependency. It is then attached to every
+        /// event (envelope <c>push_token</c>) so partner re-engagement postbacks can
+        /// reach the device. Cleared on consent denial server-side. Adjust parity:
+        /// <c>Adjust.setPushToken()</c>.
+        /// </summary>
+        public static void SetPushToken(string token)
+        {
+            _pushToken = string.IsNullOrEmpty(token) ? null : token;
+            ReflectLogger.Info("Push token set.");
+        }
+
+        /// <summary>
+        /// Set a customer-owned external device identifier, attached to every event
+        /// (envelope <c>external_device_id</c>) so you can join Reflect data to your
+        /// own backend's device records. Adjust parity: <c>external_device_id</c>.
+        /// </summary>
+        public static void SetExternalDeviceId(string externalId)
+        {
+            _externalDeviceId = string.IsNullOrEmpty(externalId) ? null : externalId;
+        }
+
+        /// <summary>
+        /// Enable or disable the SDK at runtime. While disabled, no events are
+        /// recorded or dispatched (the install/session lifecycle resumes when
+        /// re-enabled). Adjust parity: <c>Adjust.setEnabled()</c> / disable.
+        /// </summary>
+        public static void SetEnabled(bool enabled)
+        {
+            _enabled = enabled;
+            ReflectLogger.Info("Reflect " + (enabled ? "enabled" : "disabled"));
+        }
+
+        /// <summary>
+        /// Opt the user in/out of third-party data sharing (reported as
+        /// <c>third_party_sharing</c> on every event; the server can suppress
+        /// partner postbacks when false). Adjust parity:
+        /// <c>trackThirdPartySharing</c>.
+        /// </summary>
+        public static void SetThirdPartySharing(bool granted)
+        {
+            _thirdPartySharing = granted;
+        }
+
+        /// <summary>
+        /// Offline mode. While true the SDK keeps recording events into the
+        /// persistent queue but does NOT dispatch them; turn it off to flush.
+        /// Adjust parity: <c>Adjust.setOfflineMode()</c>.
+        /// </summary>
+        public static void SetOfflineMode(bool offline)
+        {
+            if (!EnsureReady()) return;
+            _dispatcher.SetOffline(offline);
+            if (!offline) _dispatcher.RequestFlushSoon();
+            ReflectLogger.Info("Offline mode " + (offline ? "ON" : "OFF"));
+        }
+
+        /// <summary>
+        /// Add a global partner parameter — a key/value forwarded to ad-network
+        /// partners on every event (sent as <c>partner_params</c>, distinct from
+        /// callback/global props). Pass null value to remove. Adjust parity:
+        /// <c>addGlobalPartnerParameter</c>.
+        /// </summary>
+        public static void AddGlobalPartnerParameter(string key, string value)
+        {
+            if (string.IsNullOrEmpty(key)) return;
+            lock (_partnerParamsLock)
+            {
+                if (value == null) _partnerParams.Remove(key);
+                else _partnerParams[key] = value;
+            }
+        }
+
+        /// <summary>Remove a single global partner parameter. Adjust parity:
+        /// <c>removeGlobalPartnerParameter</c>.</summary>
+        public static void RemoveGlobalPartnerParameter(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return;
+            lock (_partnerParamsLock) { _partnerParams.Remove(key); }
+        }
+
+        private static Dictionary<string, object> SnapshotPartnerParams()
+        {
+            lock (_partnerParamsLock)
+            {
+                return _partnerParams.Count == 0
+                    ? null
+                    : new Dictionary<string, object>(_partnerParams);
+            }
         }
 
         // ───────────────────────── Global event properties ─────────────────
@@ -607,6 +762,14 @@ namespace Reflect
                 InstallUuid   = InstallUuidStore.Value,
                 UserId        = _userId,
                 SdkVersion    = SdkVersion.Value,
+                AppVersion    = _appVersion,
+                Environment   = _config.Environment,
+                IsForeground  = _isForeground,
+                PushToken     = _pushToken,
+                ExternalDeviceId = _externalDeviceId,
+                Coppa             = _config.CoppaCompliant,
+                ThirdPartySharing = _thirdPartySharing,
+                PartnerParams = SnapshotPartnerParams(),
                 AttStatus     = _attStatus,
                 ConsentState  = _consentState,
                 Device        = _deviceSnapshot,
@@ -800,11 +963,27 @@ namespace Reflect
             cb?.Invoke(status);
         }
 
-        private static void MaybeFireInstallEvent()
+        // Backstop coroutine: force-fire the install event after a timeout if
+        // device/referral collection never completes (e.g. the native bridge was
+        // stripped from a release build, or Play Services is slow/unavailable).
+        // Without this, a single collection failure black-holes the install — and
+        // with it the attribution and the install count — entirely.
+        private static IEnumerator InstallTimeoutCo(float seconds)
         {
-            if (!_receiver.PendingInstallEvent) return;
-            if (_deviceSnapshot == null) return;
-            // Referral may legitimately be null on iOS / organic installs — don't block.
+            yield return new WaitForSeconds(seconds);
+            MaybeFireInstallEvent(force: true);
+        }
+
+        private static void MaybeFireInstallEvent(bool force = false)
+        {
+            if (_receiver == null || !_receiver.PendingInstallEvent) return;
+            // Fast path: wait until BOTH device info AND the install referrer have
+            // arrived, so app_install carries the click_id (deterministic
+            // attribution) and the device IDs. The timeout backstop (force=true)
+            // fires with whatever arrived so a stalled/stripped collector can't
+            // lose the install — deterministic if the referrer made it, organic
+            // otherwise, but never invisible.
+            if (!force && (_deviceSnapshot == null || _referralSnapshot == null)) return;
             _receiver.PendingInstallEvent = false;
             TrackEvent(ReflectStandardEvents.AppInstall);
             // Firebase parity: app_first_open distinguishes the very first session
@@ -836,14 +1015,25 @@ namespace Reflect
         private static void OnApplicationPauseInternal(bool paused)
         {
             if (!_initialized) return;
+            _isForeground = !paused;
             if (paused)
             {
-                if (_config.AutoSessionTracking) TrackEvent("session_end");
+                if (_config.AutoSessionTracking)
+                {
+                    // session_length_ms drives aggregates_sessions.total_active_ms.
+                    var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var lengthMs = _sessionStartMs > 0 ? nowMs - _sessionStartMs : 0L;
+                    TrackEvent("session_end", new Dictionary<string, object> { { "session_length_ms", lengthMs } });
+                }
                 _queue.PersistToDisk();
             }
             else
             {
-                if (_config.AutoSessionTracking) TrackEvent("session_start");
+                if (_config.AutoSessionTracking)
+                {
+                    _sessionStartMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    TrackEvent("session_start");
+                }
                 _dispatcher.RequestFlushSoon();
             }
         }

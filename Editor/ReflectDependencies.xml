@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Reflect SDK native dependencies for the External Dependency Manager for Unity
+  (EDM4U). If EDM4U is installed, run Assets → External Dependency Manager →
+  Android Resolver → Resolve and these are injected into the Gradle build for you.
+
+  If you do NOT use EDM4U, the bundled Editor build post-processor
+  (ReflectAndroidGradlePostProcessor) injects the same deps + the ProGuard
+  keep-rules automatically at build time — so either path works with zero manual
+  Gradle editing. (Both are idempotent; using both is harmless — Gradle dedupes.)
+-->
+<dependencies>
+  <androidPackages>
+    <androidPackage spec="com.google.android.gms:play-services-ads-identifier:18.0.1"/>
+    <androidPackage spec="com.android.installreferrer:installreferrer:2.2"/>
+    <androidPackage spec="com.google.android.gms:play-services-appset:16.0.2"/>
+  </androidPackages>
+  <!-- iOS frameworks (AdSupport / AppTrackingTransparency / AdServices) are linked
+       by ReflectBuildPostProcessor.cs, so no extra CocoaPods are required here. -->
+</dependencies>

@@ -18,15 +18,21 @@ public final class ReflectBridge {
     private static Context appCtx;
     private static String unityReceiver;
     private static volatile boolean adConsent = true;
+    private static volatile boolean collectImei = false;   // China-market opt-in (Adjust: imei plugin)
+    private static volatile boolean collectOaid = false;   // China-market opt-in (Adjust: oaid plugin)
 
     private ReflectBridge() {}
 
     /** Initialize with the Unity activity + GameObject name to send callbacks to. */
-    public static void initialize(Activity activity, String receiverName, boolean advertisingConsent) {
+    public static void initialize(Activity activity, String receiverName, boolean advertisingConsent,
+                                  boolean imei, boolean oaid) {
         appCtx = activity != null ? activity.getApplicationContext() : null;
         unityReceiver = receiverName;
         adConsent = advertisingConsent;
-        Log.i(TAG, "Initialized. receiver=" + receiverName + " adConsent=" + advertisingConsent);
+        collectImei = imei;
+        collectOaid = oaid;
+        Log.i(TAG, "Initialized. receiver=" + receiverName + " adConsent=" + advertisingConsent
+                + " imei=" + imei + " oaid=" + oaid);
     }
 
     public static void setAdvertisingConsent(boolean granted) {
@@ -41,7 +47,7 @@ public final class ReflectBridge {
         }
         new Thread(() -> {
             try {
-                String json = DeviceInfoCollector.collect(appCtx, adConsent);
+                String json = DeviceInfoCollector.collect(appCtx, adConsent, collectImei, collectOaid);
                 send("OnDeviceInfoJson", json);
             } catch (Throwable t) {
                 Log.e(TAG, "collectDeviceInfo failed", t);

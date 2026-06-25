@@ -52,6 +52,26 @@ namespace Reflect
         public bool VpnDetected;
         public bool MockLocationEnabled;
 
+        // Adjust-parity device taxonomy + identifiers
+        public string DeviceType;    // phone | tablet | tv | watch
+        public string OsBuild;       // Build.ID
+        public string HardwareName;  // Build.DISPLAY
+        public string ScreenSize;    // small | normal | large | xlarge
+        public string ScreenFormat;  // normal | long
+        public string UiMode;        // normal | tv | watch | car | desk
+        public bool   IsSystemApp;
+        public string AppSetId;      // Google App Set ID (Android 12+)
+        public string GaidSource;    // play_services
+        public int    GaidAttempt;   // Adjust: gps_adid_attempt
+        public string FireAdid;      // Amazon Fire advertising id
+        public bool   FireTrackingEnabled;
+        // China-market identifiers (opt-in)
+        public string Imei;
+        public string Meid;
+        public string DeviceId;
+        public string Oaid;
+        public string OaidSrc;
+
         internal static DeviceSnapshot FromJson(string json)
         {
             var d = MiniJson.Deserialize(json) as IDictionary<string, object>;
@@ -91,7 +111,24 @@ namespace Reflect
                 IsEmulator            = Bool(d, "is_emulator"),
                 IsRooted              = Bool(d, "is_rooted"),
                 VpnDetected           = Bool(d, "vpn_detected"),
-                MockLocationEnabled   = Bool(d, "mock_location_enabled")
+                MockLocationEnabled   = Bool(d, "mock_location_enabled"),
+                DeviceType            = Str(d, "device_type"),
+                OsBuild               = Str(d, "os_build"),
+                HardwareName          = Str(d, "hardware_name"),
+                ScreenSize            = Str(d, "screen_size"),
+                ScreenFormat          = Str(d, "screen_format"),
+                UiMode                = Str(d, "ui_mode"),
+                IsSystemApp           = Bool(d, "is_system_app"),
+                AppSetId              = Str(d, "app_set_id"),
+                GaidSource            = Str(d, "gaid_source"),
+                GaidAttempt           = Int(d, "gaid_attempt"),
+                FireAdid              = Str(d, "fire_adid"),
+                FireTrackingEnabled   = Bool(d, "fire_tracking_enabled"),
+                Imei                  = Str(d, "imei"),
+                Meid                  = Str(d, "meid"),
+                DeviceId              = Str(d, "device_id"),
+                Oaid                  = Str(d, "oaid"),
+                OaidSrc               = Str(d, "oaid_src")
             };
             return s;
         }

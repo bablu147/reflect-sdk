@@ -42,6 +42,19 @@ Player Settings → Android:
 - **targetSdkVersion:** 33+
 - **Scripting Backend:** IL2CPP
 - **Target Architectures:** ARMv7 + ARM64
+- **Custom Proguard File:** ✅ **required for release builds.** Minified (R8)
+  release builds strip `com.reflect.sdk.**` — the native bridge for device-info
+  **and** install-referrer collection — so `app_install` never fires and
+  installs/attribution disappear (a debug APK won't reveal this). The plugin
+  ships as Java source, so its keep-rules are **not** auto-applied; enabling this
+  makes Unity apply the bundled `Plugins/Android/proguard-user.txt`. See
+  [`Plugins/Android/REFLECT_GRADLE_SETUP.md`](Plugins/Android/REFLECT_GRADLE_SETUP.md)
+  → "Release builds".
+
+> The `AD_ID` permission (for the GAID) is declared by the SDK manifest and
+> merges automatically — **you don't add it** (remove it only for COPPA/kids
+> apps). You **do** declare advertising-ID usage in **Play Console → App content
+> → Advertising ID** and **Data safety** (Device or other IDs).
 
 ---
 
@@ -412,6 +425,47 @@ ReflectSDK.HandleDeepLink(url, isCold: true);     // wire from Activity / AppDel
 new ReflectConfig { AutoCaptureCrashes = false };  // opt out if you have your own
 ```
 
+### Adjust-parity APIs
+
+```csharp
+// Re-engagement push token (FCM/APNS) — attached to every event as push_token.
+// Pass the token your app already obtains; no messaging dependency is bundled.
+ReflectSDK.SetPushToken(fcmOrApnsToken);
+
+// Customer-owned external device id — join Reflect data to your own backend.
+ReflectSDK.SetExternalDeviceId("your_device_ref");
+
+// Enable/disable all tracking at runtime (events neither recorded nor sent).
+ReflectSDK.SetEnabled(false);
+
+// Offline mode — keep recording into the persistent queue, hold dispatch.
+ReflectSDK.SetOfflineMode(true);   // flush by calling SetOfflineMode(false)
+
+// Third-party data-sharing opt-in (reported as third_party_sharing per event).
+ReflectSDK.SetThirdPartySharing(false);
+
+// Partner parameters — key/values forwarded to ad-network partners (partner_params),
+// distinct from SetGlobalProperty (which goes into props / your own callbacks).
+ReflectSDK.AddGlobalPartnerParameter("pub_id", "12345");
+ReflectSDK.RemoveGlobalPartnerParameter("pub_id");
+```
+
+```csharp
+// Config-time flags
+new ReflectConfig {
+    Environment   = "sandbox",   // "production" (default) | "sandbox" — excluded from billing/revenue
+    CoppaCompliant = true,       // child-directed: reports ff_coppa, suppress ad ids
+    CollectImei    = true,       // CHINA opt-in (Android, needs READ_PHONE_STATE; OS-blocked on 13+)
+    CollectOaid    = true,       // CHINA opt-in (needs the MSA/Huawei OAID SDK)
+    InstallEventTimeoutSeconds = 5f,  // backstop so app_install always fires
+};
+```
+
+Beyond these, the SDK now also collects (in `device`): `device_type`, `os_build`, `hardware_name`,
+`screen_size`/`screen_format`, `ui_mode`, `is_system_app`, `gaid_source`/`gaid_attempt`, the Google
+**App Set ID**, **Fire ID**, and (opt-in) **IMEI/MEID/OAID** — and on the envelope `environment`,
+`is_foreground`, `session_length_ms`. All identifiers are consent-gated and scrubbed on denial.
+
 ### New event names (auto-recognized by the server)
 
 `app_first_open`, `sign_up`, `login`, `tutorial_begin`, `tutorial_complete`,
@@ -428,8 +482,29 @@ new ReflectConfig { AutoCaptureCrashes = false };  // opt out if you have your o
   Direct Cloudflare cost saving on R2 audit + ingress.
 - **Event validator** — drops bad events client-side (length, prop count,
   type) so we don't waste local queue / R2 storage on rejected payloads.
-- **ProGuard consumer rules** — shipped at `Plugins/Android/consumer-rules.pro`
-  so release builds with R8 enabled don't strip the native bridge.
+- **ProGuard keep-rules** — shipped at `Plugins/Android/proguard-user.txt`.
+  ⚠️ Because the plugin ships as Java source (not an `.aar`), these are **not**
+  auto-applied — enable **Player → Android → Publishing Settings → Custom
+  Proguard File** so R8 doesn't strip the native bridge on release builds.
+  (`consumer-rules.pro` is kept for reference / AAR-based setups.)
+- **Resilient `app_install`** — the install event now fires on a short timeout
+  (`ReflectConfig.InstallEventTimeoutSeconds`, default 5s) even if native
+  device/referrer collection stalls or is stripped, so an install is never lost.
+- **`app_version` on every event** — captured in pure C# (`Application.version`),
+  so it survives even when native collection is unavailable; promoted to a
+  queryable `events.app_version` column server-side (plus `{app_version}` postback
+  macro).
+- **Adjust-parity signal expansion** — the SDK now also collects `device_type`,
+  `os_build`, `hardware_name`, `screen_size`/`screen_format`, `ui_mode`,
+  `is_system_app`, `gaid_source`, and the Google **App Set ID** (Android 12+,
+  optional `play-services-appset` dep); iOS reports `device_type`. New envelope
+  signals: `environment` (`ReflectConfig.Environment` — `"sandbox"` excluded from
+  billing), `is_foreground` (lifecycle), and `push_token` via
+  `ReflectSDK.SetPushToken(token)` (pass your FCM/APNS token — no messaging
+  dependency bundled). All consent-gated and scrubbed on denial. Server promotes
+  the common dashboard dims (device_type, environment, is_foreground, app_set_id,
+  push_token, install_store, ad_network/placement) to `events` columns and rolls
+  up engagement (`aggregates_sessions`) + ad revenue (`aggregates_ad_revenue`).
 
 ### Server-side additions (no migration required from your end)
 

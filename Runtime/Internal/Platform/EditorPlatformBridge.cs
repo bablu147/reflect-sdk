@@ -12,7 +12,7 @@ namespace Reflect.Internal.Platform
     {
         private string _receiver;
 
-        public void Initialize(string unityReceiverName, bool advertisingConsent)
+        public void Initialize(string unityReceiverName, bool advertisingConsent, bool collectImei, bool collectOaid)
         {
             _receiver = unityReceiverName;
             ReflectLogger.Info("Editor platform bridge initialized.");

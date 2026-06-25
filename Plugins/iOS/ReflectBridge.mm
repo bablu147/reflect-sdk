@@ -164,6 +164,12 @@ void _reflect_collect_device_info(void) {
         d[@"api_level"]          = @0;
         d[@"device_model"]       = HardwareModel() ?: @"";
         d[@"device_manufacturer"]= @"Apple";
+        // Adjust parity: device_type. UIUserInterfaceIdiom → phone | tablet | tv.
+        switch ([[UIDevice currentDevice] userInterfaceIdiom]) {
+            case UIUserInterfaceIdiomPad:  d[@"device_type"] = @"tablet"; break;
+            case UIUserInterfaceIdiomTV:   d[@"device_type"] = @"tv";     break;
+            default:                       d[@"device_type"] = @"phone";  break;
+        }
         d[@"device_brand"]       = @"Apple";
         d[@"cpu_arch"]           = @(
 #if defined(__arm64__) || defined(__aarch64__)

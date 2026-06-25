@@ -7,8 +7,9 @@ namespace Reflect.Internal.Platform
     /// </summary>
     internal interface IPlatformBridge
     {
-        /// <summary>Set up native side with the Unity GameObject name used for callbacks.</summary>
-        void Initialize(string unityReceiverName, bool advertisingConsent);
+        /// <summary>Set up native side with the Unity GameObject name used for callbacks.
+        /// collectImei/collectOaid opt into the China-market identifiers (off by default).</summary>
+        void Initialize(string unityReceiverName, bool advertisingConsent, bool collectImei, bool collectOaid);
 
         /// <summary>Collect device info asynchronously. Result delivered via <c>OnDeviceInfoJson</c>.</summary>
         void CollectDeviceInfo();

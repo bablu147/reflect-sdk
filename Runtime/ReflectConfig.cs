@@ -49,8 +49,42 @@ namespace Reflect
         /// <summary>Enable verbose debug logging (Unity console).</summary>
         public bool EnableLogging = false;
 
+        /// <summary>
+        /// Reporting environment: <c>"production"</c> (default) or <c>"sandbox"</c>.
+        /// Sandbox events are stored but excluded from billing/revenue dashboards,
+        /// so you can test the integration without polluting production metrics.
+        /// Adjust parity: <c>AdjustEnvironment.Sandbox</c>. Gate on
+        /// <c>UnityEngine.Debug.isDebugBuild</c> to auto-switch in dev builds.
+        /// </summary>
+        public string Environment = "production";
+
         /// <summary>Automatically track app_open / session_start / session_end.</summary>
         public bool AutoSessionTracking = true;
+
+        /// <summary>
+        /// Mark this app as COPPA-compliant (directed to children). When true the
+        /// SDK reports <c>ff_coppa=1</c> on every event so the server can suppress
+        /// advertising-ID collection downstream. Adjust parity:
+        /// <c>setCoppaCompliantEnabled</c>. Also remove the AD_ID permission from
+        /// your manifest for kids apps.
+        /// </summary>
+        public bool CoppaCompliant = false;
+
+        /// <summary>
+        /// CHINA-MARKET, OPT-IN. Collect the device IMEI/MEID (Android, requires the
+        /// READ_PHONE_STATE permission; blocked by the OS on Android 10+ for normal
+        /// apps). Off by default — only enable for China distribution where IMEI is
+        /// the expected identifier and you have a lawful basis. Adjust parity: the
+        /// AdjustImei plugin. Consent-gated + scrubbed like every other identifier.
+        /// </summary>
+        public bool CollectImei = false;
+
+        /// <summary>
+        /// CHINA-MARKET, OPT-IN. Collect the OAID (Open Anonymous Device ID) via the
+        /// MSA/Huawei SDK. Requires the China OAID SDK to be present; off by default.
+        /// Adjust parity: the AdjustOaid plugin.
+        /// </summary>
+        public bool CollectOaid = false;
 
         /// <summary>How many events to send per batch request. Default 50.</summary>
         public int BatchSize = 50;
@@ -60,6 +94,17 @@ namespace Reflect
 
         /// <summary>Flush interval in seconds. Default 30.</summary>
         public float FlushIntervalSeconds = 30f;
+
+        /// <summary>
+        /// Backstop timeout (seconds) for the first-launch <c>app_install</c> event.
+        /// The install event normally fires as soon as device info + the install
+        /// referrer have been collected. If native collection stalls or is stripped
+        /// from a release build (e.g. R8 removed the native bridge because the
+        /// ProGuard keep-rules weren't applied), the install would otherwise never
+        /// fire. After this timeout the SDK fires <c>app_install</c> anyway with
+        /// whatever data has arrived, so an install is never lost. Default 5s.
+        /// </summary>
+        public float InstallEventTimeoutSeconds = 5f;
 
         /// <summary>
         /// If true, the SDK will NOT read advertising identifiers (GAID/IDFA)
@@ -73,6 +118,22 @@ namespace Reflect
         /// If false, you must call <see cref="ReflectSDK.RequestIosTracking"/> yourself.
         /// </summary>
         public bool AutoRequestIosTracking = false;
+
+        /// <summary>
+        /// iOS only. If true (default), the SDK arms SKAdNetwork on launch by sending
+        /// an initial conversion value of 0. Apple requires this call once or the SKAN
+        /// attribution window never opens and SKAN-driven installs go unreported.
+        /// Disable only if you manage SKAN registration yourself.
+        /// </summary>
+        public bool AutoRegisterSkan = true;
+
+        /// <summary>
+        /// On first launch, ask the server to resolve a deferred deep link for this
+        /// install (fingerprint match to a recent click's deep_link_path) and raise
+        /// <see cref="ReflectSDK.OnDeepLink"/> if one is found. Covers iOS / probabilistic
+        /// / referrer-less installs the Play-referrer <c>dl</c> param can't. Default true.
+        /// </summary>
+        public bool AutoResolveDeferredDeepLink = true;
 
         /// <summary>
         /// Force-enable the in-app developer overlay <b>even when a real
@@ -122,6 +183,7 @@ namespace Reflect
             if (BatchSize <= 0) BatchSize = 50;
             if (MaxQueueSize <= 0) MaxQueueSize = 1000;
             if (FlushIntervalSeconds < 1f) FlushIntervalSeconds = 1f;
+            if (InstallEventTimeoutSeconds < 1f) InstallEventTimeoutSeconds = 1f;
         }
     }
 

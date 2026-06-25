@@ -1,0 +1,34 @@
+# Reflect SDK — Unity user ProGuard / R8 rules.
+#
+# WHY THIS FILE EXISTS (read this if installs/attribution disappear in release builds):
+# The Reflect Android plugin ships as Java SOURCE (not an .aar), so its
+# consumer-rules.pro is NOT auto-applied by the consuming app's R8. Unity, on the
+# other hand, DOES append `Assets/Plugins/Android/proguard-user.txt` to the R8
+# config when "Custom Proguard File" is enabled. So this file is the rules in the
+# location Unity actually reads.
+#
+# ENABLE IT: Unity → Edit → Project Settings → Player → Android → Publishing
+# Settings → tick "Custom Proguard File". (Minified release builds otherwise strip
+# com.reflect.sdk.** — the native bridge for BOTH device-info and install-referrer
+# collection — so app_install never fires and installs/attribution vanish.)
+#
+# NOTE: if your project already has its own proguard-user.txt, MERGE these rules
+# into it rather than overwriting.
+
+# Keep all SDK classes — they're called from C# via JNI / reflection.
+-keep class com.reflect.sdk.** { *; }
+-keepclassmembers class com.reflect.sdk.** { *; }
+
+# UnityPlayer.UnitySendMessage — used by native callbacks back to C#.
+-keep class com.unity3d.player.UnityPlayer { *; }
+
+# Google Play Install Referrer library — keep its public surface so the
+# async client connection callback isn't stripped.
+-keep class com.android.installreferrer.** { *; }
+-keepclasseswithmembernames class * { @com.android.installreferrer.** *; }
+
+# Google Play Services Ads Identifier (for GAID).
+-keep class com.google.android.gms.ads.identifier.** { *; }
+
+# Google App Set ID (optional dependency).
+-keep class com.google.android.gms.appset.** { *; }

@@ -20,6 +20,7 @@ namespace Reflect.Internal
         private readonly ReflectConfig _config;
         private readonly EventQueue _queue;
         private bool _sending;
+        private bool _offline;          // Adjust: setOfflineMode — queue but don't dispatch
         private float _nextAllowedAt;
         private int _backoffStep;
         private static readonly float[] BackoffSeconds = { 1f, 4f, 15f, 60f, 300f, 900f };
@@ -36,11 +37,16 @@ namespace Reflect.Internal
             // Coalesced — actual flush happens on next tick if conditions met.
         }
 
+        /// <summary>Adjust parity: when offline, events are queued but not sent.</summary>
+        public void SetOffline(bool offline) { _offline = offline; }
+
         public void Flush()
         {
             // Debug mode: no BaseUrl → never dispatch. Events stay in the queue
             // (capped at MaxQueueSize) and remain visible in the overlay.
             if (_config.IsDebugMode) return;
+            // Offline mode: hold everything in the persistent queue until back online.
+            if (_offline) return;
             if (_sending) return;
             if (Time.realtimeSinceStartup < _nextAllowedAt) return;
             if (_queue.Count == 0) return;
@@ -318,6 +324,52 @@ namespace Reflect.Internal
                     ReflectLogger.Warn($"Push token registration failed ({req.responseCode}): {req.error}");
                 }
             }
+        }
+
+        /// <summary>
+        /// Resolve a deferred deep link via <c>{BaseUrl}/deeplink/resolve</c>. The
+        /// server matches this install (by fingerprint) to a recent click carrying a
+        /// deep_link_path and returns it — covering iOS / fingerprint / referrer-less
+        /// installs that the Play-referrer `dl` param can't. Invokes onPath with the
+        /// resolved path (or null).
+        /// </summary>
+        public IEnumerator ResolveDeferredDeepLink(string appKey, string installUuid, Action<string> onPath)
+        {
+            if (_config.IsDebugMode || string.IsNullOrEmpty(_config.BaseUrl)) { onPath?.Invoke(null); yield break; }
+
+            var body = "{" +
+                "\"app_key\":\""      + EscapeJsonString(appKey)      + "\"," +
+                "\"install_uuid\":\"" + EscapeJsonString(installUuid) + "\"" +
+            "}";
+            var bytes = Encoding.UTF8.GetBytes(body);
+            var url = _config.BaseUrl + "/deeplink/resolve";
+
+            string resolvedPath = null;
+            using (var req = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST))
+            {
+                req.uploadHandler   = new UploadHandlerRaw(bytes) { contentType = "application/json" };
+                req.downloadHandler = new DownloadHandlerBuffer();
+                req.SetRequestHeader("Content-Type",  "application/json");
+                req.SetRequestHeader("X-Reflect-Sdk", SdkVersion.Value);
+                if (!string.IsNullOrEmpty(_config.AppKey))        req.SetRequestHeader("X-Reflect-App-Key", _config.AppKey);
+                if (!string.IsNullOrEmpty(_config.SigningSecret)) req.SetRequestHeader("X-Reflect-Signature", Hmac(bytes, _config.SigningSecret));
+                req.timeout = 15;
+
+                yield return req.SendWebRequest();
+
+#if UNITY_2020_1_OR_NEWER
+                bool ok = req.result == UnityWebRequest.Result.Success;
+#else
+                bool ok = !req.isNetworkError && !req.isHttpError;
+#endif
+                if (ok && req.responseCode >= 200 && req.responseCode < 300)
+                {
+                    var parsed = MiniJson.Deserialize(req.downloadHandler.text) as IDictionary<string, object>;
+                    if (parsed != null && parsed.TryGetValue("deep_link_path", out var p))
+                        resolvedPath = p as string;
+                }
+            }
+            onPath?.Invoke(resolvedPath);
         }
 
         /// <summary>Minimal JSON string escaping for hand-built JSON payloads.</summary>

@@ -12,8 +12,8 @@ namespace Reflect.Internal.Platform
         [DllImport("__Internal")] private static extern void _reflect_request_att();
         [DllImport("__Internal")] private static extern void _reflect_update_conversion_value(int fineValue, string coarseValue, bool lockWindow);
 
-        public void Initialize(string unityReceiverName, bool advertisingConsent)
-            => _reflect_initialize(unityReceiverName, advertisingConsent);
+        public void Initialize(string unityReceiverName, bool advertisingConsent, bool collectImei, bool collectOaid)
+            => _reflect_initialize(unityReceiverName, advertisingConsent);   // China IDs are Android-only
         public void CollectDeviceInfo() => _reflect_collect_device_info();
         public void CollectReferral() => _reflect_collect_referral();
         public void SetAdvertisingConsent(bool granted) => _reflect_set_ad_consent(granted);
