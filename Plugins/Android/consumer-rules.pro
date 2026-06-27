@@ -23,3 +23,12 @@
 
 # Google Play Services Ads Identifier (for GAID).
 -keep class com.google.android.gms.ads.identifier.** { *; }
+
+# Google App Set ID (optional dependency) — keep so R8 doesn't strip App Set ID
+# collection in builds that rely on these consumer rules.
+-keep class com.google.android.gms.appset.** { *; }
+
+# Reflection-loaded optional SDKs (China OAID / Huawei referrer) — if the host app
+# bundles them, keep so the reflective Class.forName lookups still resolve under R8.
+-keep class com.bun.miitmdid.** { *; }
+-keep class com.huawei.hms.ads.installreferrer.** { *; }

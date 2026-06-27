@@ -13,8 +13,6 @@ import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.WindowManager;
 
-import com.google.android.gms.ads.identifier.AdvertisingIdClient;
-
 import org.json.JSONObject;
 
 import java.util.Locale;
@@ -42,20 +40,16 @@ final class DeviceInfoCollector {
         // ── Identifiers ────────────────────────────────────────────────
         j.put("ad_consent", adConsent);
         if (adConsent) {
-            // GAID with bounded retry — Adjust parity: gps_adid_attempt + gps_adid_src.
-            AdvertisingIdClient.Info info = null;
-            int gaidAttempt = 0;
-            while (gaidAttempt < 3 && info == null) {
-                gaidAttempt++;
-                try { info = AdvertisingIdClient.getAdvertisingIdInfo(ctx); }
-                catch (Throwable t) { Log.w(TAG, "GAID attempt " + gaidAttempt + " failed: " + t.getMessage()); }
+            // GAID via the GMS service first, then the library (Adjust parity:
+            // gps_adid_attempt + gps_adid_src). Each path is time-bounded so a wedged
+            // Play Services can't hang collection, and the real source is recorded.
+            GaidReader.Result g = GaidReader.read(ctx);
+            j.put("gaid_attempt", g.attempt);
+            if (g.id != null) {
+                j.put("gaid", g.id);
+                j.put("gaid_source", g.source);
             }
-            j.put("gaid_attempt", gaidAttempt);
-            if (info != null && !info.isLimitAdTrackingEnabled() && info.getId() != null) {
-                j.put("gaid", info.getId());
-                j.put("gaid_source", "play_services");
-            }
-            j.put("lat_enabled", info != null && info.isLimitAdTrackingEnabled());
+            j.put("lat_enabled", g.lat);
 
             // Google App Set ID (Android 12+) — privacy-friendly per-developer ID,
             // useful for matching/dedup as GAID availability declines. Requires the
@@ -145,8 +139,36 @@ final class DeviceInfoCollector {
         } catch (Throwable ignored) {}
 
         try {
-            long total = Runtime.getRuntime().maxMemory();
-            j.put("total_ram_mb", total / (1024 * 1024));
+            // PHYSICAL RAM. Prefer /proc/meminfo MemTotal — it's the kernel's view of
+            // installed RAM and is stable from the very first read. ActivityManager's
+            // totalMem can report a transient low value on a cold first launch (before
+            // the process's memory accounting settles), which is how install events
+            // ended up with ~384 MB while later events read the true ~7.3 GB. Neither
+            // is Runtime.maxMemory() (the Dalvik heap cap, also ~384 MB on an 8 GB device).
+            long ramMb = 0;
+            try {
+                java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader("/proc/meminfo"));
+                try {
+                    String line;
+                    while ((line = r.readLine()) != null) {
+                        if (line.startsWith("MemTotal:")) {
+                            String[] parts = line.trim().split("\\s+"); // "MemTotal:  8123456 kB"
+                            if (parts.length >= 2) ramMb = Long.parseLong(parts[1]) / 1024; // kB -> MB
+                            break;
+                        }
+                    }
+                } finally { r.close(); }
+            } catch (Throwable ignored) {}
+
+            if (ramMb <= 0) { // fallback: ActivityManager.totalMem
+                android.app.ActivityManager am = (android.app.ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
+                if (am != null) {
+                    android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
+                    am.getMemoryInfo(mi);
+                    ramMb = mi.totalMem / (1024 * 1024);
+                }
+            }
+            if (ramMb > 0) j.put("total_ram_mb", ramMb);
         } catch (Throwable ignored) {}
 
         // ── App ───────────────────────────────────────────────────────

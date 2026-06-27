@@ -7,6 +7,8 @@
 #import <UIKit/UIKit.h>
 #import <sys/utsname.h>
 #import <sys/sysctl.h>
+#import <ifaddrs.h>
+#import <net/if.h>
 
 #import <AdSupport/AdSupport.h>
 
@@ -22,13 +24,11 @@
 #define REFLECT_HAS_ADSERVICES 1
 #endif
 
-// AdAttributionKit is iOS 17.4+ — replaces SKAdNetwork for conversion value updates.
-#if __has_include(<AdAttributionKit/AdAttributionKit.h>)
-#import <AdAttributionKit/AdAttributionKit.h>
-#define REFLECT_HAS_ADATTRIBUTIONKIT 1
-#endif
+// NOTE: AdAttributionKit (iOS 17.4+) is a SWIFT-ONLY framework with no Objective-C
+// API, so it cannot be driven from this .mm — SKAdNetwork below handles all conversion
+// value updates (its updatePostbackConversionValue: remains valid on iOS 17.4+).
 
-// SKAdNetwork (legacy) — iOS 11.3+ for updateConversionValue, iOS 15.4+ for
+// SKAdNetwork — iOS 11.3+ for updateConversionValue, iOS 15.4+ for
 // updatePostbackConversionValue. Used as fallback when AdAttributionKit unavailable.
 #if __has_include(<StoreKit/SKAdNetwork.h>)
 #import <StoreKit/SKAdNetwork.h>
@@ -107,6 +107,51 @@ static BOOL IsRunningOnSimulator(void) {
 }
 
 // ─── ATT ────────────────────────────────────────────────────────────────
+// Connectivity via active network interfaces (no extra framework / no async wait):
+// en* = Wi-Fi/wired, pdp_ip* = cellular. Matches the Android connection_type field
+// instead of the previous hardcoded "unknown".
+static NSString* ReflectConnectionType(void) {
+    struct ifaddrs *addrs = NULL;
+    BOOL wifi = NO, cell = NO;
+    if (getifaddrs(&addrs) == 0) {
+        for (struct ifaddrs *a = addrs; a != NULL; a = a->ifa_next) {
+            if (a->ifa_addr == NULL) continue;
+            if (!(a->ifa_flags & IFF_UP) || !(a->ifa_flags & IFF_RUNNING)) continue;
+            if (a->ifa_flags & IFF_LOOPBACK) continue;
+            sa_family_t fam = a->ifa_addr->sa_family;
+            if (fam != AF_INET && fam != AF_INET6) continue;
+            NSString *name = [NSString stringWithUTF8String:a->ifa_name];
+            if ([name hasPrefix:@"en"])           wifi = YES;   // Wi-Fi (or wired)
+            else if ([name hasPrefix:@"pdp_ip"])  cell = YES;   // cellular
+        }
+        freeifaddrs(addrs);
+    }
+    if (wifi) return @"wifi";
+    if (cell) return @"cellular";
+    return @"none";
+}
+
+// VPN detection via tunnelling interfaces (ppp/ipsec/tap/tun). utun* is deliberately
+// excluded — iOS creates utun interfaces for non-VPN system services (e.g. iCloud
+// Private Relay), so flagging them would be a false positive.
+static BOOL ReflectVpnDetected(void) {
+    struct ifaddrs *addrs = NULL;
+    BOOL vpn = NO;
+    if (getifaddrs(&addrs) == 0) {
+        for (struct ifaddrs *a = addrs; a != NULL && !vpn; a = a->ifa_next) {
+            if (a->ifa_name == NULL) continue;
+            if (!(a->ifa_flags & IFF_UP) || !(a->ifa_flags & IFF_RUNNING)) continue;
+            NSString *name = [NSString stringWithUTF8String:a->ifa_name];
+            if ([name hasPrefix:@"ppp"] || [name hasPrefix:@"ipsec"] ||
+                [name hasPrefix:@"tap"] || [name hasPrefix:@"tun"]) {
+                vpn = YES;
+            }
+        }
+        freeifaddrs(addrs);
+    }
+    return vpn;
+}
+
 static int CurrentAttStatus(void) {
 #if REFLECT_HAS_ATT
     if (@available(iOS 14, *)) {
@@ -190,7 +235,16 @@ void _reflect_collect_device_info(void) {
         NSBundle* b = [NSBundle mainBundle];
         d[@"app_bundle_id"]     = b.bundleIdentifier ?: @"";
         d[@"app_version"]       = [b objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"";
-        d[@"app_version_code"]  = @([[b objectForInfoDictionaryKey:@"CFBundleVersion"] longLongValue]);
+        NSString* bundleVer = [b objectForInfoDictionaryKey:@"CFBundleVersion"];
+        long long vcode = bundleVer ? [bundleVer longLongValue] : 0;
+        if (vcode == 0 && bundleVer.length > 0) {
+            // Non-numeric CFBundleVersion (e.g. "build-42") → keep only digits so we
+            // don't silently report 0 for the build number.
+            NSString* digits = [[bundleVer componentsSeparatedByCharactersInSet:
+                [[NSCharacterSet decimalDigitCharacterSet] invertedSet]] componentsJoinedByString:@""];
+            if (digits.length > 0) vcode = [digits longLongValue];
+        }
+        d[@"app_version_code"]  = @(vcode);
         d[@"install_source"]    = @"ios_app_store";
         d[@"first_install_time"]= @0; // iOS doesn't expose this directly.
         d[@"last_update_time"]  = @0;
@@ -202,20 +256,30 @@ void _reflect_collect_device_info(void) {
         d[@"timezone"]      = tz.name ?: @"";
         d[@"tz_offset_min"] = @((int)(tz.secondsFromGMT / 60));
 
-        d[@"connection_type"] = @"unknown"; // iOS reachability requires extra libs; skip for v1.
+        d[@"connection_type"] = ReflectConnectionType();   // wifi | cellular | none
+        // Apple no longer provides reliable carrier/MCC/MNC on modern iOS — leave null.
         d[@"carrier"]         = [NSNull null];
         d[@"carrier_mcc"]     = [NSNull null];
         d[@"carrier_mnc"]     = [NSNull null];
 
         d[@"is_emulator"]          = @(IsRunningOnSimulator());
         d[@"is_rooted"]            = @(IsJailbroken());
-        d[@"vpn_detected"]         = @NO;
-        d[@"mock_location_enabled"]= @NO;
+        d[@"vpn_detected"]         = @(ReflectVpnDetected());
+        // iOS cannot determine mock-location — send null (not a misleading false) so
+        // the backend can tell "clean" from "not measured".
+        d[@"mock_location_enabled"]= [NSNull null];
 
         d[@"idfv"]  = [[[UIDevice currentDevice] identifierForVendor] UUIDString] ?: @"";
+        // Raw ATT authorization status (0 notDetermined, 1 restricted, 2 denied,
+        // 3 authorized) — preserves the discrete state instead of collapsing it into
+        // lat_enabled, which conflated "denied" with "not yet prompted".
+        int attStatus = CurrentAttStatus();
+        d[@"att_status"] = @(attStatus);
         NSString* idfa = ReadIdfaIfAllowed();
         if (idfa) d[@"idfa"] = idfa;
-        d[@"lat_enabled"] = @(idfa == nil);
+        // lat_enabled only when tracking is genuinely limited/denied (status 2),
+        // not when the prompt simply hasn't been shown yet (status 0).
+        d[@"lat_enabled"] = @(idfa == nil && attStatus != 0);
 
         NSString* json = JsonStringFrom(d);
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -255,8 +319,8 @@ void _reflect_request_att(void) {
     SendToUnity(@"OnAttStatusCode", @"99"); // Unavailable on pre-iOS 14.
 }
 
-// ─── SKAN / AdAttributionKit conversion value update ─────────────────
-// Priority: AdAttributionKit (iOS 17.4+) > SKAdNetwork 4.0 (iOS 16.1+)
+// ─── SKAdNetwork conversion value update ─────────────────────────────
+// Priority: SKAdNetwork 4.0 (iOS 16.1+, coarse+lock) > legacy (fine only)
 //         > SKAdNetwork legacy (iOS 15.4+) > SKAdNetwork 11.3+ (fine only).
 //
 // coarseValue: "low", "medium", "high", or empty string (no coarse).
@@ -267,28 +331,11 @@ void _reflect_request_att(void) {
 void _reflect_update_conversion_value(int fineValue, const char* coarseValue, bool lockWindow) {
     NSString* coarse = coarseValue ? [NSString stringWithUTF8String:coarseValue] : @"";
 
-#if REFLECT_HAS_ADATTRIBUTIONKIT
-    // AdAttributionKit (iOS 17.4+) — preferred path.
-    if (@available(iOS 17.4, *)) {
-        AACoarseConversionValue coarseCV = nil;
-        if ([coarse isEqualToString:@"high"])   coarseCV = AACoarseConversionValueHigh;
-        else if ([coarse isEqualToString:@"medium"]) coarseCV = AACoarseConversionValueMedium;
-        else if ([coarse isEqualToString:@"low"])    coarseCV = AACoarseConversionValueLow;
-
-        [AAAttribution updateConversionValue:fineValue
-                         coarseConversionValue:coarseCV
-                                  lockPostback:lockWindow
-                             completionHandler:^(NSError* _Nullable err) {
-            if (err) {
-                NSString* msg = [NSString stringWithFormat:@"error:%@", err.localizedDescription];
-                dispatch_async(dispatch_get_main_queue(), ^{ SendToUnity(@"OnSkanCvUpdateResult", msg); });
-            } else {
-                dispatch_async(dispatch_get_main_queue(), ^{ SendToUnity(@"OnSkanCvUpdateResult", @"ok"); });
-            }
-        }];
-        return;
-    }
-#endif
+    // NOTE: AdAttributionKit (iOS 17.4+) is a Swift-only framework — it exposes NO
+    // Objective-C conversion-value API, so it cannot be driven from this .mm. SKAdNetwork's
+    // updatePostbackConversionValue: remains valid on iOS 17.4+ and is used for all SKAN
+    // conversion-value updates below. (A prior AdAttributionKit ObjC block here referenced
+    // non-existent symbols and broke the entire iOS build on any modern Xcode.)
 
 #if REFLECT_HAS_SKADNETWORK
     // SKAdNetwork 4.0 (iOS 16.1+) — updatePostbackConversionValue:coarseValue:lockWindow:

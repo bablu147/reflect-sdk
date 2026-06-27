@@ -38,6 +38,10 @@ namespace Reflect.Editor
             "-keepclasseswithmembernames class * { @com.android.installreferrer.** *; }",
             "-keep class com.google.android.gms.ads.identifier.** { *; }",
             "-keep class com.google.android.gms.appset.** { *; }",
+            // Reflection-loaded optional SDKs (China OAID / Huawei referrer) — kept so
+            // the Class.forName lookups resolve under R8 when the host bundles them.
+            "-keep class com.bun.miitmdid.** { *; }",
+            "-keep class com.huawei.hms.ads.installreferrer.** { *; }",
         };
 
         private static readonly string[] Deps =
@@ -57,6 +61,13 @@ namespace Reflect.Editor
                 // `path` is the generated unityLibrary Gradle module directory.
                 WriteProguardFile(path);
                 InjectGradle(Path.Combine(path, "build.gradle"));
+#if REFLECT_COPPA
+                // Kids/COPPA build: strip the AD_ID permission the SDK ships so a
+                // children's app can never declare/collect the advertising ID. Pair
+                // this define with ReflectConfig.CoppaCompliant=true (which also stops
+                // the SDK reading GAID/IDFA at runtime).
+                StripAdIdPermission(Path.Combine(path, "src", "main", "AndroidManifest.xml"));
+#endif
             }
             catch (System.Exception ex)
             {
@@ -67,10 +78,46 @@ namespace Reflect.Editor
 #endif
         }
 
+#if REFLECT_COPPA
+        // Remove every <uses-permission ... AD_ID ... /> declaration from the merged
+        // manifest. Defensive: a missing manifest is logged + skipped, never throws.
+        private static void StripAdIdPermission(string manifestPath)
+        {
+            if (!File.Exists(manifestPath))
+            {
+                Debug.LogWarning("[Reflect] COPPA: merged AndroidManifest.xml not found at "
+                    + manifestPath + " — could not strip AD_ID permission. Remove it manually for kids apps.");
+                return;
+            }
+            var lines = File.ReadAllLines(manifestPath);
+            var kept = new System.Collections.Generic.List<string>(lines.Length);
+            int removed = 0;
+            foreach (var line in lines)
+            {
+                if (line.Contains("uses-permission") && line.Contains("com.google.android.gms.permission.AD_ID"))
+                {
+                    removed++;
+                    continue;
+                }
+                kept.Add(line);
+            }
+            if (removed > 0)
+            {
+                File.WriteAllText(manifestPath, string.Join("\n", kept) + "\n");
+                Debug.Log("[Reflect] COPPA build — stripped " + removed + " AD_ID permission declaration(s) from the manifest.");
+            }
+        }
+#endif
+
         private static void WriteProguardFile(string moduleDir)
         {
             var file = Path.Combine(moduleDir, "reflect-proguard.txt");
-            File.WriteAllText(file, Marker + "\n" + string.Join("\n", KeepRules) + "\n");
+            // ProGuard/R8 comments use '#', NOT '//'. The shared Marker is "// ..."
+            // (valid in the build.gradle Groovy context) — emitting it as the first line
+            // of a ProGuard file makes R8 fail with "Expected char '-'", breaking every
+            // minified release build. Use a '#' comment header here instead.
+            File.WriteAllText(file, "# ReflectSDK-auto (do not edit)\n"
+                + string.Join("\n", KeepRules) + "\n");
         }
 
         private static void InjectGradle(string buildGradle)

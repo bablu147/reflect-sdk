@@ -23,6 +23,12 @@ namespace Reflect
         // Adjust-parity envelope signals (pure C#).
         public string Environment;
         public bool   IsForeground;
+        // Session bookkeeping (Adjust parity). session_id groups events within a
+        // session; session_count / subsession_count are the authoritative tallies so
+        // the server never has to reconstruct session boundaries from gappy events.
+        public string SessionId;
+        public int    SessionCount;
+        public int    SubsessionCount;
         public string PushToken;
         public string ExternalDeviceId;   // customer-set cross-system device id (Adjust: external_device_id)
         public bool   Coppa;              // Adjust: ff_coppa
@@ -33,12 +39,20 @@ namespace Reflect
         public ReferralSnapshot Referral;
         public double? Revenue;
         public string  Currency;
-        public string  TransactionId;
+        public string  TransactionId;   // iOS StoreKit transaction id (dedup key on iOS)
+        public string  PurchaseToken;   // Android Play purchase token (receipt validation + dedup)
+        public string  OrderId;         // Android Play order id (GPA.xxxx)
         public string  ProductId;
+        public string  DeduplicationId; // Adjust parity: event-level dedup id (suppressed client-side)
+        public string  CallbackId;      // Adjust parity: event_callback_id for callback correlation
+        public int     ImpressionsCount; // ad revenue: number of impressions (0 = omit)
         public IDictionary<string, object> Properties;
         // Adjust parity: partner_params — a separate key/value map forwarded to ad
         // network partners (distinct from callback/global props which go to props).
         public IDictionary<string, object> PartnerParams;
+        // Adjust parity: callback_params — forwarded on server-to-server callback URLs,
+        // distinct from props (analytics) and partner_params (network forwarding).
+        public IDictionary<string, object> CallbackParams;
 
         /// <summary>Compact JSON representation of this event. No dependencies.</summary>
         public string ToJson()
@@ -54,6 +68,12 @@ namespace Reflect
             JsonWriter.Kv(sb, "app_version", AppVersion); sb.Append(',');
             JsonWriter.Kv(sb, "environment", Environment); sb.Append(',');
             JsonWriter.KvBool(sb, "is_foreground", IsForeground); sb.Append(',');
+            if (!string.IsNullOrEmpty(SessionId))
+            {
+                JsonWriter.Kv(sb, "session_id", SessionId); sb.Append(',');
+                JsonWriter.KvNum(sb, "session_count", SessionCount); sb.Append(',');
+                JsonWriter.KvNum(sb, "subsession_count", SubsessionCount); sb.Append(',');
+            }
             JsonWriter.Kv(sb, "push_token", PushToken); sb.Append(',');
             JsonWriter.Kv(sb, "external_device_id", ExternalDeviceId); sb.Append(',');
             JsonWriter.KvBool(sb, "ff_coppa", Coppa); sb.Append(',');
@@ -86,10 +106,35 @@ namespace Reflect
                 sb.Append(',');
                 JsonWriter.Kv(sb, "transaction_id", TransactionId);
             }
+            if (!string.IsNullOrEmpty(PurchaseToken))
+            {
+                sb.Append(',');
+                JsonWriter.Kv(sb, "purchase_token", PurchaseToken);
+            }
+            if (!string.IsNullOrEmpty(OrderId))
+            {
+                sb.Append(',');
+                JsonWriter.Kv(sb, "order_id", OrderId);
+            }
             if (!string.IsNullOrEmpty(ProductId))
             {
                 sb.Append(',');
                 JsonWriter.Kv(sb, "product_id", ProductId);
+            }
+            if (!string.IsNullOrEmpty(DeduplicationId))
+            {
+                sb.Append(',');
+                JsonWriter.Kv(sb, "deduplication_id", DeduplicationId);
+            }
+            if (!string.IsNullOrEmpty(CallbackId))
+            {
+                sb.Append(',');
+                JsonWriter.Kv(sb, "callback_id", CallbackId);
+            }
+            if (ImpressionsCount > 0)
+            {
+                sb.Append(',');
+                JsonWriter.KvNum(sb, "impressions_count", ImpressionsCount);
             }
 
             // Custom properties
@@ -97,6 +142,8 @@ namespace Reflect
             WriteProps(sb, Properties);
             sb.Append(",\"partner_params\":");
             WriteProps(sb, PartnerParams);
+            sb.Append(",\"callback_params\":");
+            WriteProps(sb, CallbackParams);
 
             sb.Append('}');
             return sb.ToString();

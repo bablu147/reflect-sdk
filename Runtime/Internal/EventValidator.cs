@@ -11,6 +11,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace Reflect.Internal
@@ -76,7 +77,18 @@ namespace Reflect.Internal
                 case bool _:
                 case int _:
                 case long _:
-                    return v;
+                case decimal _:
+                    return v;   // serialized as a JSON number, invariant, by JsonWriter
+                // Widen the smaller integer types to long (lossless) so they serialize
+                // as numbers, not culture-formatted strings.
+                case byte _:
+                case sbyte _:
+                case short _:
+                case ushort _:
+                case uint _:
+                    return Convert.ToInt64(v);
+                case ulong _:
+                    return v;   // may exceed long.MaxValue; JsonWriter emits the digits
                 case float f:
                     return float.IsInfinity(f) || float.IsNaN(f) ? (object)0f : v;
                 case double d:
@@ -89,7 +101,9 @@ namespace Reflect.Internal
                 case IEnumerable _:
                     return v;   // server validates depth; trust caller for nested
                 default:
-                    return v.ToString();
+                    // Never use the locale-sensitive ToString() — on comma-decimal
+                    // cultures it would corrupt numbers (1.5 -> "1,5").
+                    return Convert.ToString(v, CultureInfo.InvariantCulture);
             }
         }
     }

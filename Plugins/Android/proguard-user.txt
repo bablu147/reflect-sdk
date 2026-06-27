@@ -32,3 +32,8 @@
 
 # Google App Set ID (optional dependency).
 -keep class com.google.android.gms.appset.** { *; }
+
+# Reflection-loaded optional SDKs (China OAID / Huawei referrer) — kept so the
+# reflective Class.forName lookups resolve under R8 when the host bundles them.
+-keep class com.bun.miitmdid.** { *; }
+-keep class com.huawei.hms.ads.installreferrer.** { *; }

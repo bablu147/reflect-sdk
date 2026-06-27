@@ -50,6 +50,18 @@ namespace Reflect
         public bool EnableLogging = false;
 
         /// <summary>
+        /// Optional device-integrity attestation hook. If set, the SDK calls it before
+        /// each batch and sends the returned token as the <c>X-Reflect-Integrity-Token</c>
+        /// header, so the server can verify the request came from a genuine, untampered
+        /// app on a real device (Play Integrity on Android, App Attest / DeviceCheck on
+        /// iOS) — a far stronger anti-spoofing signal than the static HMAC secret, which
+        /// is extractable from the binary. The host app supplies the token from its own
+        /// Play Integrity / App Attest integration; the server must verify it. Return
+        /// null to skip for a given request. Must be safe to call from the main thread.
+        /// </summary>
+        [System.NonSerialized] public System.Func<string> IntegrityTokenProvider;
+
+        /// <summary>
         /// Reporting environment: <c>"production"</c> (default) or <c>"sandbox"</c>.
         /// Sandbox events are stored but excluded from billing/revenue dashboards,
         /// so you can test the integration without polluting production metrics.
@@ -60,6 +72,15 @@ namespace Reflect
 
         /// <summary>Automatically track app_open / session_start / session_end.</summary>
         public bool AutoSessionTracking = true;
+
+        /// <summary>
+        /// Minimum time (seconds) the app must be backgrounded before the next
+        /// foreground counts as a NEW session. Briefer background bounces (notification
+        /// peek, app switch, biometric prompt) are treated as subsessions of the same
+        /// session, so session counts are not inflated. Adjust parity:
+        /// <c>SESSION_INTERVAL</c> (default 30 minutes = 1800s).
+        /// </summary>
+        public int SessionThresholdSeconds = 1800;
 
         /// <summary>
         /// Mark this app as COPPA-compliant (directed to children). When true the
@@ -92,6 +113,13 @@ namespace Reflect
         /// <summary>Maximum events held in the persistent offline queue. Default 1000.</summary>
         public int MaxQueueSize = 1000;
 
+        /// <summary>
+        /// Size of the client-side LRU window used to suppress duplicate events by
+        /// their <c>DeduplicationId</c>. Adjust parity:
+        /// <c>EventDeduplicationIdsMaxSize</c> (default 10). Set 0 to disable.
+        /// </summary>
+        public int EventDeduplicationIdsMaxSize = 10;
+
         /// <summary>Flush interval in seconds. Default 30.</summary>
         public float FlushIntervalSeconds = 30f;
 
@@ -114,6 +142,17 @@ namespace Reflect
         public bool RequireAdvertisingConsent = false;
 
         /// <summary>
+        /// Consent-gated transmission (fail-closed). When true, the SDK starts in a
+        /// <b>denied</b> consent state: it keeps recording events into the on-device
+        /// queue but does NOT transmit anything (and does not read advertising IDs)
+        /// until <see cref="ReflectSDK.SetConsent"/> is called with <c>true</c>. Use
+        /// this in GDPR/ePrivacy markets so no personal data leaves the device before
+        /// the user has made a choice. Once granted, the decision is persisted across
+        /// launches. Default false (events transmit immediately, consent annotated).
+        /// </summary>
+        public bool RequireConsent = false;
+
+        /// <summary>
         /// If true, the SDK automatically triggers the iOS ATT prompt on first launch.
         /// If false, you must call <see cref="ReflectSDK.RequestIosTracking"/> yourself.
         /// </summary>
@@ -134,6 +173,16 @@ namespace Reflect
         /// / referrer-less installs the Play-referrer <c>dl</c> param can't. Default true.
         /// </summary>
         public bool AutoResolveDeferredDeepLink = true;
+
+        /// <summary>
+        /// LinkMe-style clipboard deferred deep linking. When true, on first launch the
+        /// SDK reads the system clipboard and, if it holds an http(s) URL (placed there
+        /// at click time), routes it as a deferred deep link — improving match rate on
+        /// iOS where the Play install referrer is unavailable. Off by default because
+        /// reading the clipboard shows the iOS paste banner. Adjust parity:
+        /// <c>IsLinkMeEnabled</c>.
+        /// </summary>
+        public bool LinkMeEnabled = false;
 
         /// <summary>
         /// Force-enable the in-app developer overlay <b>even when a real

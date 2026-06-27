@@ -30,7 +30,26 @@ namespace Reflect.Internal
         {
             WriteString(sb, key);
             sb.Append(':');
-            sb.Append(value.ToString("R", CultureInfo.InvariantCulture));
+            sb.Append(FormatDouble(value));
+        }
+
+        /// <summary>
+        /// Format a double as a valid JSON number. NaN / ±Infinity have no JSON
+        /// representation — emitting the bare tokens <c>NaN</c>/<c>Infinity</c> (which
+        /// <c>ToString("R")</c> produces) makes the entire event body unparseable and
+        /// can poison a whole batch and the on-disk queue. A bad value (e.g. a NaN
+        /// revenue from a divide-by-zero price) degrades to <c>null</c> instead.
+        /// </summary>
+        internal static string FormatDouble(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value)) return "null";
+            return value.ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        internal static string FormatFloat(float value)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value)) return "null";
+            return value.ToString("R", CultureInfo.InvariantCulture);
         }
 
         public static void KvBool(StringBuilder sb, string key, bool value)
@@ -57,8 +76,18 @@ namespace Reflect.Internal
                     case '\r': sb.Append("\\r");  break;
                     case '\t': sb.Append("\\t");  break;
                     default:
-                        if (c < 0x20) sb.AppendFormat(CultureInfo.InvariantCulture, "\\u{0:x4}", (int)c);
-                        else sb.Append(c);
+                        if (c < 0x20)
+                            sb.AppendFormat(CultureInfo.InvariantCulture, "\\u{0:x4}", (int)c);
+                        else if (char.IsHighSurrogate(c) && (i + 1 >= s.Length || !char.IsLowSurrogate(s[i + 1])))
+                            // Lone high surrogate — escape it so the body stays valid JSON
+                            // and round-trips, instead of being replaced with U+FFFD by the
+                            // UTF-8 encoder (which silently corrupts the value on the wire).
+                            sb.AppendFormat(CultureInfo.InvariantCulture, "\\u{0:x4}", (int)c);
+                        else if (char.IsLowSurrogate(c) && (i == 0 || !char.IsHighSurrogate(s[i - 1])))
+                            // Lone low surrogate (not preceded by a high surrogate) — escape it.
+                            sb.AppendFormat(CultureInfo.InvariantCulture, "\\u{0:x4}", (int)c);
+                        else
+                            sb.Append(c);   // normal char, or a valid surrogate-pair member
                         break;
                 }
             }
@@ -72,9 +101,12 @@ namespace Reflect.Internal
             if (v is bool b)          { sb.Append(b ? "true" : "false"); return; }
             if (v is int i)           { sb.Append(i.ToString(CultureInfo.InvariantCulture)); return; }
             if (v is long l)          { sb.Append(l.ToString(CultureInfo.InvariantCulture)); return; }
-            if (v is float f)         { sb.Append(f.ToString("R", CultureInfo.InvariantCulture)); return; }
-            if (v is double d)        { sb.Append(d.ToString("R", CultureInfo.InvariantCulture)); return; }
+            if (v is float f)         { sb.Append(FormatFloat(f)); return; }
+            if (v is double d)        { sb.Append(FormatDouble(d)); return; }
             if (v is decimal dec)     { sb.Append(dec.ToString(CultureInfo.InvariantCulture)); return; }
+            if (v is uint || v is ushort || v is short || v is byte || v is sbyte)
+                                      { sb.Append(System.Convert.ToInt64(v).ToString(CultureInfo.InvariantCulture)); return; }
+            if (v is ulong ul)        { sb.Append(ul.ToString(CultureInfo.InvariantCulture)); return; }
 
             if (v is IDictionary<string, object> map)
             {
@@ -106,8 +138,8 @@ namespace Reflect.Internal
                 return;
             }
 
-            // Fallback: treat as string
-            WriteString(sb, v.ToString());
+            // Fallback: treat as string, invariant (never locale-sensitive ToString()).
+            WriteString(sb, System.Convert.ToString(v, CultureInfo.InvariantCulture));
         }
     }
 }

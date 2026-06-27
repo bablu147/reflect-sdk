@@ -16,6 +16,7 @@ namespace Reflect
         internal Action<ReferralSnapshot> OnReferralReadyHandler;
         internal Action<IosTrackingStatus> OnAttStatusHandler;
         internal Action<bool>             OnPauseHandler;
+        internal Action                   OnQuitHandler;
         internal Action                   OnTickHandler;
         internal Action<string>           OnSkanCvUpdateHandler;
 
@@ -44,6 +45,12 @@ namespace Reflect
         private void Update()   => OnTickHandler?.Invoke();
 
         private void OnApplicationPause(bool paused) => OnPauseHandler?.Invoke(paused);
+
+        // Persist the queue on a clean quit too. On mobile, backgrounding fires
+        // OnApplicationPause first (which already persists), but desktop/editor quit
+        // and some Android termination paths only fire OnApplicationQuit — without
+        // this, everything queued that session would be lost.
+        private void OnApplicationQuit() => OnQuitHandler?.Invoke();
 
         // ─── Called via UnitySendMessage from native code ───────────────
         // Android: UnityPlayer.UnitySendMessage("__ReflectCallbackReceiver", "OnDeviceInfoJson", json)

@@ -6,12 +6,20 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
 
     <!-- Required on Android 13+ to read the Google Advertising ID.
-         Remove this line if your app targets children / COPPA. -->
+         KIDS / COPPA APPS: do NOT ship this permission. Set ReflectConfig.CoppaCompliant=true
+         (stops the SDK reading GAID/IDFA at runtime) AND add the scripting define
+         REFLECT_COPPA so the build auto-strips this line from the merged manifest. -->
     <uses-permission android:name="com.google.android.gms.permission.AD_ID"/>
 
     <queries>
         <!-- Required so PackageManager.getInstallerPackageName works on Android 11+. -->
         <package android:name="com.android.vending"/>
+        <!-- Store install-referrer content providers (Meta / Samsung / Xiaomi) must be
+             declared here to be queryable on Android 11+ package visibility. -->
+        <provider android:authorities="com.facebook.katana.provider.InstallReferrerProvider"/>
+        <provider android:authorities="com.instagram.android.provider.InstallReferrerProvider"/>
+        <provider android:authorities="com.sec.android.app.samsungapps.installreferrer"/>
+        <provider android:authorities="com.xiaomi.market.installreferrer"/>
     </queries>
 
     <application />
