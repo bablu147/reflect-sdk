@@ -234,6 +234,57 @@ namespace Reflect
             if (FlushIntervalSeconds < 1f) FlushIntervalSeconds = 1f;
             if (InstallEventTimeoutSeconds < 1f) InstallEventTimeoutSeconds = 1f;
         }
+
+        /// <summary>
+        /// Serialize to the <c>initialize</c> arg map the native core reads (camelCase
+        /// keys mirroring the Flutter contract). Also carries two migration-continuity
+        /// args read from the legacy Unity stores so an upgrade off the old C# runtime
+        /// keeps the same identity: <c>existingInstallUuid</c> (the legacy PlayerPrefs
+        /// install_uuid → adopted by the core so the install isn't a phantom reinstall)
+        /// and <c>initialConsent</c> (the legacy persisted consent choice).
+        /// </summary>
+        internal string ToJson()
+        {
+            var m = new System.Collections.Generic.Dictionary<string, object>();
+            m["appKey"] = AppKey ?? "";
+            if (!string.IsNullOrEmpty(CompanyKey)) m["companyKey"] = CompanyKey;
+            if (!string.IsNullOrEmpty(SigningSecret)) m["signingSecret"] = SigningSecret;
+            // Empty baseUrl ⇒ the core's local-only/debug mode (no network) — matches
+            // Unity's "null/empty BaseUrl = debug mode".
+            m["baseUrl"] = string.IsNullOrEmpty(BaseUrl) ? "" : BaseUrl;
+            m["debug"] = EnableLogging || string.IsNullOrEmpty(BaseUrl);
+            m["environment"] = string.IsNullOrEmpty(Environment) ? "production" : Environment;
+            m["coppaCompliant"] = CoppaCompliant;
+            m["collectImei"] = CollectImei;
+            m["collectOaid"] = CollectOaid;
+            m["linkMeEnabled"] = LinkMeEnabled;
+            m["sessionThresholdSeconds"] = SessionThresholdSeconds;
+            m["batchSize"] = BatchSize;
+            m["maxQueueSize"] = MaxQueueSize;
+            m["installEventTimeoutSeconds"] = (int)InstallEventTimeoutSeconds;
+            m["eventDeduplicationIdsMaxSize"] = EventDeduplicationIdsMaxSize;
+            m["autoResolveDeferredDeepLink"] = AutoResolveDeferredDeepLink;
+            m["autoSessionTracking"] = AutoSessionTracking;
+            m["flushIntervalSeconds"] = (int)FlushIntervalSeconds;
+            m["autoRegisterSkan"] = AutoRegisterSkan;        // iOS-only (Android ignores)
+            m["autoRequestIosTracking"] = AutoRequestIosTracking;
+            m["requireAdvertisingConsent"] = RequireAdvertisingConsent;
+            m["requireConsent"] = RequireConsent;
+
+            // R7 — initialConsent: carry the legacy persisted choice, else fail-closed
+            // per RequireConsent. The core's precedence is its-own-store > initialConsent.
+            string legacyConsent = UnityEngine.PlayerPrefs.GetString("reflect_consent_state", null);
+            m["initialConsent"] = !string.IsNullOrEmpty(legacyConsent)
+                ? legacyConsent
+                : (RequireConsent ? "denied" : "granted");
+
+            // R8 — existingInstallUuid: the legacy install identity (dashed Guid "D").
+            // The core adopts it ONLY when its own store is empty (first migrated launch).
+            string legacyUuid = UnityEngine.PlayerPrefs.GetString("reflect.install_uuid", null);
+            if (!string.IsNullOrEmpty(legacyUuid)) m["existingInstallUuid"] = legacyUuid;
+
+            return Reflect.Internal.JsonWriter.Serialize(m);
+        }
     }
 
     /// <summary>iOS App Tracking Transparency status.</summary>

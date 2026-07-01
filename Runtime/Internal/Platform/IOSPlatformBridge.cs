@@ -3,23 +3,22 @@ using System.Runtime.InteropServices;
 
 namespace Reflect.Internal.Platform
 {
+    /// <summary>
+    /// iOS transport: P/Invoke onto the Swift bridge (<c>ReflectUnityBridge.swift</c>,
+    /// shipped in Plugins/iOS) whose <c>@_cdecl</c> entry points forward to
+    /// <c>ReflectCore.handle()</c>. Results return via UnitySendMessage on
+    /// <c>OnCallResult</c> (tagged by callbackId), so the C entry points are void.
+    /// </summary>
     internal sealed class IOSPlatformBridge : IPlatformBridge
     {
-        [DllImport("__Internal")] private static extern void _reflect_initialize(string receiver, bool adConsent);
-        [DllImport("__Internal")] private static extern void _reflect_collect_device_info();
-        [DllImport("__Internal")] private static extern void _reflect_collect_referral();
-        [DllImport("__Internal")] private static extern void _reflect_set_ad_consent(bool granted);
-        [DllImport("__Internal")] private static extern void _reflect_request_att();
-        [DllImport("__Internal")] private static extern void _reflect_update_conversion_value(int fineValue, string coarseValue, bool lockWindow);
+        [DllImport("__Internal")] private static extern void _reflect_core_initialize(string receiver, string configJson);
+        [DllImport("__Internal")] private static extern void _reflect_core_call(string method, string argsJson, string callbackId);
 
-        public void Initialize(string unityReceiverName, bool advertisingConsent, bool collectImei, bool collectOaid)
-            => _reflect_initialize(unityReceiverName, advertisingConsent);   // China IDs are Android-only
-        public void CollectDeviceInfo() => _reflect_collect_device_info();
-        public void CollectReferral() => _reflect_collect_referral();
-        public void SetAdvertisingConsent(bool granted) => _reflect_set_ad_consent(granted);
-        public void RequestIosTracking() => _reflect_request_att();
-        public void UpdateSkanConversionValue(int fineValue, string coarseValue, bool lockWindow)
-            => _reflect_update_conversion_value(fineValue, coarseValue ?? "", lockWindow);
+        public void Initialize(string unityReceiverName, string configJson)
+            => _reflect_core_initialize(unityReceiverName, configJson ?? "{}");
+
+        public void Call(string method, string argsJson, string callbackId)
+            => _reflect_core_call(method, argsJson ?? "{}", callbackId ?? "");
     }
 }
 #endif

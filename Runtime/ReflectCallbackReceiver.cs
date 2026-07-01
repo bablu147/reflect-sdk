@@ -1,28 +1,21 @@
-using System;
-using Reflect.Internal;
 using UnityEngine;
 
 namespace Reflect
 {
     /// <summary>
-    /// Hidden MonoBehaviour that receives <c>UnitySendMessage</c> callbacks from
-    /// Android / iOS native code, and drives tick / pause callbacks.
+    /// Hidden MonoBehaviour that receives <c>UnitySendMessage</c> callbacks from the
+    /// shared native core (via the Android/iOS Unity bridges). Three channels:
+    ///   <c>OnCallResult</c>  — async result of a <c>handle()</c> call, tagged by callbackId
+    ///   <c>OnDeepLink</c>    — the core's deep-link stream
+    ///   <c>OnAttribution</c> — the core's attribution stream
+    /// App lifecycle (foreground/background → sessions) is observed natively by the
+    /// core (Android ActivityLifecycleCallbacks / iOS NotificationCenter), so this no
+    /// longer forwards pause/tick. The GameObject name + these method names are the
+    /// native↔C# bridge contract — do not rename without updating the bridges.
     /// </summary>
     internal sealed class ReflectCallbackReceiver : MonoBehaviour
     {
         internal const string GameObjectName = "__ReflectCallbackReceiver";
-
-        internal Action<DeviceSnapshot>   OnDeviceInfoReadyHandler;
-        internal Action<ReferralSnapshot> OnReferralReadyHandler;
-        internal Action<IosTrackingStatus> OnAttStatusHandler;
-        internal Action<bool>             OnPauseHandler;
-        internal Action                   OnQuitHandler;
-        internal Action                   OnTickHandler;
-        internal Action<string>           OnSkanCvUpdateHandler;
-
-        internal bool PendingInstallEvent;
-        internal Action<IosTrackingStatus> PendingAttCallback;
-        internal Action<bool, string>     PendingSkanCvCallback;
 
         private static ReflectCallbackReceiver _instance;
 
@@ -41,66 +34,10 @@ namespace Reflect
             return _instance;
         }
 
-        // ─── Called from C# Update loop ─────────────────────────────────
-        private void Update()   => OnTickHandler?.Invoke();
+        // ─── UnitySendMessage targets (called by native code, single string arg) ───
 
-        private void OnApplicationPause(bool paused) => OnPauseHandler?.Invoke(paused);
-
-        // Persist the queue on a clean quit too. On mobile, backgrounding fires
-        // OnApplicationPause first (which already persists), but desktop/editor quit
-        // and some Android termination paths only fire OnApplicationQuit — without
-        // this, everything queued that session would be lost.
-        private void OnApplicationQuit() => OnQuitHandler?.Invoke();
-
-        // ─── Called via UnitySendMessage from native code ───────────────
-        // Android: UnityPlayer.UnitySendMessage("__ReflectCallbackReceiver", "OnDeviceInfoJson", json)
-        // iOS:     UnitySendMessage("__ReflectCallbackReceiver", "OnDeviceInfoJson", json);
-
-        public void OnDeviceInfoJson(string json)
-        {
-            try
-            {
-                var snap = DeviceSnapshot.FromJson(json);
-                OnDeviceInfoReadyHandler?.Invoke(snap);
-            }
-            catch (Exception ex) { ReflectLogger.Error($"OnDeviceInfoJson parse failed: {ex}"); }
-        }
-
-        public void OnReferralJson(string json)
-        {
-            try
-            {
-                var snap = ReferralSnapshot.FromJson(json);
-                OnReferralReadyHandler?.Invoke(snap);
-            }
-            catch (Exception ex) { ReflectLogger.Error($"OnReferralJson parse failed: {ex}"); }
-        }
-
-        public void OnAttStatusCode(string code)
-        {
-            int parsed;
-            if (!int.TryParse(code, out parsed)) parsed = (int)IosTrackingStatus.Unavailable;
-            var status = (IosTrackingStatus)parsed;
-            OnAttStatusHandler?.Invoke(status);
-        }
-
-        public void OnSkanCvUpdateResult(string result)
-        {
-            bool ok = result == "ok";
-            string error = ok ? null : (result.StartsWith("error:") ? result.Substring(6) : result);
-            if (!ok) ReflectLogger.Warn($"SKAN CV update failed: {error}");
-            else ReflectLogger.Info("SKAN CV update succeeded.");
-
-            OnSkanCvUpdateHandler?.Invoke(result);
-
-            var cb = PendingSkanCvCallback;
-            PendingSkanCvCallback = null;
-            cb?.Invoke(ok, error);
-        }
-
-        public void OnNativeError(string message)
-        {
-            ReflectLogger.Error($"[native] {message}");
-        }
+        public void OnCallResult(string json)  => ReflectSDK.HandleCallResult(json);
+        public void OnDeepLink(string json)     => ReflectSDK.HandleDeepLinkPayload(json);
+        public void OnAttribution(string json)  => ReflectSDK.HandleAttributionPayload(json);
     }
 }

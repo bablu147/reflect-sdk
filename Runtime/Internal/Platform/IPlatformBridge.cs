@@ -1,37 +1,27 @@
 namespace Reflect.Internal.Platform
 {
     /// <summary>
-    /// Abstraction for per-platform native integration.
-    /// Implementations push results back via UnitySendMessage to
-    /// <see cref="ReflectCallbackReceiver"/>.
+    /// Thin transport to the shared native core. Every SDK operation is one
+    /// <see cref="Call"/> onto <c>ReflectCore.handle(method, args, result)</c>; the
+    /// core pushes async results + the deep-link/attribution streams back via
+    /// <c>UnitySendMessage</c> to <see cref="ReflectCallbackReceiver"/>
+    /// (channels <c>OnCallResult</c> / <c>OnDeepLink</c> / <c>OnAttribution</c>).
+    ///
+    /// This replaces the old collection-only bridge — in the shared-core model the
+    /// native engine owns the envelope, queue, signing, sessions, attribution and
+    /// device collection; C# only marshals.
     /// </summary>
     internal interface IPlatformBridge
     {
-        /// <summary>Set up native side with the Unity GameObject name used for callbacks.
-        /// collectImei/collectOaid opt into the China-market identifiers (off by default).</summary>
-        void Initialize(string unityReceiverName, bool advertisingConsent, bool collectImei, bool collectOaid);
+        /// <summary>Construct the core, wire the listener, and run <c>initialize</c>.
+        /// <paramref name="configJson"/> is <see cref="ReflectConfig.ToJson"/>.</summary>
+        void Initialize(string unityReceiverName, string configJson);
 
-        /// <summary>Collect device info asynchronously. Result delivered via <c>OnDeviceInfoJson</c>.</summary>
-        void CollectDeviceInfo();
-
-        /// <summary>Collect referral / attribution info asynchronously. Result via <c>OnReferralJson</c>.</summary>
-        void CollectReferral();
-
-        /// <summary>Update advertising-ID consent flag.</summary>
-        void SetAdvertisingConsent(bool granted);
-
-        /// <summary>iOS only — show ATT prompt. Result via <c>OnAttStatusCode</c>. No-op elsewhere.</summary>
-        void RequestIosTracking();
-
-        /// <summary>
-        /// Update the SKAN conversion value. Uses AdAttributionKit on iOS 17.4+,
-        /// SKAdNetwork 4.0 on iOS 16.1+, or legacy SKAN on older versions.
-        /// Result via <c>OnSkanCvUpdateResult</c>. No-op on Android/Editor.
-        /// </summary>
-        /// <param name="fineValue">Fine conversion value (0-63).</param>
-        /// <param name="coarseValue">"low", "medium", "high", or empty for none.</param>
-        /// <param name="lockWindow">If true, lock the current postback window.</param>
-        void UpdateSkanConversionValue(int fineValue, string coarseValue, bool lockWindow);
+        /// <summary>Dispatch a core method. <paramref name="argsJson"/> is a JSON object of
+        /// that method's args; <paramref name="callbackId"/> is a non-empty correlation id
+        /// when the caller wants the result back via <c>OnCallResult</c>, or "" for
+        /// fire-and-forget.</summary>
+        void Call(string method, string argsJson, string callbackId);
     }
 
     internal static class PlatformBridgeFactory

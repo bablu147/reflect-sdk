@@ -33,6 +33,10 @@ namespace Reflect.Editor
         {
             "-keep class com.reflect.sdk.** { *; }",
             "-keepclassmembers class com.reflect.sdk.** { *; }",
+            // The shared engine package (shipped in reflect-android.aar). The AAR's own
+            // consumer-rules.pro normally covers this, but keep it here too so an R8
+            // pass can never strip the reflectively-loaded core collectors.
+            "-keep class com.reflect.core.** { *; }",
             "-keep class com.unity3d.player.UnityPlayer { *; }",
             "-keep class com.android.installreferrer.** { *; }",
             "-keepclasseswithmembernames class * { @com.android.installreferrer.** *; }",
@@ -49,6 +53,11 @@ namespace Reflect.Editor
             "com.google.android.gms:play-services-ads-identifier:18.0.1",
             "com.android.installreferrer:installreferrer:2.2",
             "com.google.android.gms:play-services-appset:16.0.2",
+            // The shared engine in reflect-android.aar is Kotlin — Unity's flat
+            // unityLibrary consumption can miss the AAR's transitive stdlib POM dep,
+            // so declare it explicitly (matches the Kotlin version the AAR was built
+            // with). Without it the app fails to link kotlin.* at runtime.
+            "org.jetbrains.kotlin:kotlin-stdlib:1.8.22",
         };
 
         public void OnPostGenerateGradleAndroidProject(string path)

@@ -1,61 +1,44 @@
 #if UNITY_ANDROID && !UNITY_EDITOR
-using UnityEngine;
-
 namespace Reflect.Internal.Platform
 {
+    /// <summary>
+    /// Android transport: JNI onto the Unity bridge in the reflect-android AAR
+    /// (<c>com.reflect.sdk.ReflectUnityBridge</c>), a static facade over
+    /// <c>com.reflect.core.ReflectCore.handle()</c>. Results return via
+    /// UnitySendMessage (no JNI return values), so every call is fire-and-forget at
+    /// the JNI boundary; the result rides <c>OnCallResult</c> tagged by callbackId.
+    /// </summary>
     internal sealed class AndroidPlatformBridge : IPlatformBridge
     {
-        private const string JavaBridge = "com.reflect.sdk.ReflectBridge";
-        private AndroidJavaClass _bridge;
+        private const string JavaBridge = "com.reflect.sdk.ReflectUnityBridge";
+        private UnityEngine.AndroidJavaClass _bridge;
 
-        private AndroidJavaClass Bridge
+        private UnityEngine.AndroidJavaClass Bridge
         {
             get
             {
-                if (_bridge == null) _bridge = new AndroidJavaClass(JavaBridge);
+                if (_bridge == null) _bridge = new UnityEngine.AndroidJavaClass(JavaBridge);
                 return _bridge;
             }
         }
 
-        public void Initialize(string unityReceiverName, bool advertisingConsent, bool collectImei, bool collectOaid)
+        public void Initialize(string unityReceiverName, string configJson)
         {
             try
             {
-                using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
-                using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
+                using (var unityPlayer = new UnityEngine.AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+                using (var activity = unityPlayer.GetStatic<UnityEngine.AndroidJavaObject>("currentActivity"))
                 {
-                    Bridge.CallStatic("initialize", activity, unityReceiverName, advertisingConsent, collectImei, collectOaid);
+                    Bridge.CallStatic("initialize", activity, unityReceiverName, configJson);
                 }
             }
             catch (System.Exception ex) { ReflectLogger.Error($"Android initialize failed: {ex}"); }
         }
 
-        public void CollectDeviceInfo()
+        public void Call(string method, string argsJson, string callbackId)
         {
-            try { Bridge.CallStatic("collectDeviceInfo"); }
-            catch (System.Exception ex) { ReflectLogger.Error($"Android collectDeviceInfo failed: {ex}"); }
-        }
-
-        public void CollectReferral()
-        {
-            try { Bridge.CallStatic("collectReferral"); }
-            catch (System.Exception ex) { ReflectLogger.Error($"Android collectReferral failed: {ex}"); }
-        }
-
-        public void SetAdvertisingConsent(bool granted)
-        {
-            try { Bridge.CallStatic("setAdvertisingConsent", granted); }
-            catch (System.Exception ex) { ReflectLogger.Error($"Android setAdvertisingConsent failed: {ex}"); }
-        }
-
-        public void RequestIosTracking()
-        {
-            // No-op on Android.
-        }
-
-        public void UpdateSkanConversionValue(int fineValue, string coarseValue, bool lockWindow)
-        {
-            // No-op on Android — SKAN is iOS only.
+            try { Bridge.CallStatic("call", method, argsJson ?? "{}", callbackId ?? ""); }
+            catch (System.Exception ex) { ReflectLogger.Error($"Android call '{method}' failed: {ex}"); }
         }
     }
 }

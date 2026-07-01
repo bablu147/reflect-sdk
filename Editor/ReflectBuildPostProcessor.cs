@@ -116,15 +116,65 @@ namespace Reflect.Editor
 
 #if UNITY_2019_3_OR_NEWER
             var targetGuid = proj.GetUnityFrameworkTargetGuid();
+            var mainGuid = proj.GetUnityMainTargetGuid();
 #else
             var targetGuid = proj.TargetGuidByName(PBXProject.GetUnityTargetName());
+            var mainGuid = targetGuid;
 #endif
             proj.AddFrameworkToProject(targetGuid, "AdSupport.framework", false);
             proj.AddFrameworkToProject(targetGuid, "AppTrackingTransparency.framework", /*weak*/ true);
             proj.AddFrameworkToProject(targetGuid, "AdServices.framework", /*weak*/ true);
             proj.AddFrameworkToProject(targetGuid, "StoreKit.framework", /*weak*/ true);
+            // Frameworks the shared Swift core links that the legacy ObjC bridge did NOT
+            // (so Unity never linked them): CryptoKit (HMAC-SHA256 signing), Network
+            // (NWPathMonitor connectivity), CoreTelephony (carrier). Without these the
+            // Swift symbols are undefined and the app aborts at load ("missing symbol").
+            proj.AddFrameworkToProject(targetGuid, "CryptoKit.framework", false);
+            proj.AddFrameworkToProject(targetGuid, "Network.framework", false);
+            proj.AddFrameworkToProject(targetGuid, "CoreTelephony.framework", false);
+
+            ConfigureSwift(proj, targetGuid, mainGuid);
 
             proj.WriteToFile(pbx);
+        }
+
+        /// <summary>
+        /// The Reflect shared core ships as loose Swift (Plugins/iOS/ReflectCore.swift,
+        /// ReflectCoreTypes.swift, ReflectUnityBridge.swift) and compiles into the
+        /// UnityFramework target. Unity configures NO Swift build settings, so without
+        /// these the Swift files fail to compile ("SWIFT_VERSION not set") and the app
+        /// won't link the Swift runtime. The @_cdecl entry points the C# layer P/Invokes
+        /// are C-linked, so no bridging header / -Swift.h import is needed.
+        /// </summary>
+        private static void ConfigureSwift(PBXProject proj, string frameworkGuid, string mainGuid)
+        {
+            // UnityFramework target — where the Plugins/iOS Swift compiles.
+            proj.SetBuildProperty(frameworkGuid, "SWIFT_VERSION", "5.0");
+            proj.SetBuildProperty(frameworkGuid, "CLANG_ENABLE_MODULES", "YES");
+            proj.AddBuildProperty(frameworkGuid, "LD_RUNPATH_SEARCH_PATHS",
+                "@executable_path/Frameworks @loader_path/Frameworks");
+
+            // Export the Swift @_cdecl entry points the C# layer P/Invokes via
+            // DllImport("__Internal"). Unity restricts the framework's exported symbols
+            // to _il2cpp_* and dead-strips the rest; a Swift @_cdecl symbol is LOCAL by
+            // default, so IL2CPP's __Internal resolver can't find it at startup and
+            // aborts with "missing symbol called" (an ObjC++ extern "C" symbol is
+            // exported by default, which is why the old bridge didn't need this). The
+            // mach-o names carry a doubled leading underscore (C '_reflect_core_x' →
+            // '__reflect_core_x'). Exporting also protects them from -dead_strip.
+            proj.AddBuildProperty(frameworkGuid, "OTHER_LDFLAGS",
+                "-Wl,-exported_symbol,__reflect_core_initialize " +
+                "-Wl,-exported_symbol,__reflect_core_call " +
+                "-Wl,-exported_symbol,__reflect_core_handle_url");
+
+            // Main app target — embed the Swift standard libraries so the runtime the
+            // core depends on ships in the .app bundle (required since the host project
+            // has no Swift of its own).
+            proj.SetBuildProperty(mainGuid, "ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES", "YES");
+            proj.AddBuildProperty(mainGuid, "LD_RUNPATH_SEARCH_PATHS", "@executable_path/Frameworks");
+
+            UnityEngine.Debug.Log("[Reflect] Configured Swift build settings (SWIFT_VERSION 5.0 + embedded "
+                + "Swift stdlib) so the shared core compiles + links in the generated Xcode project.");
         }
 
         private static void AddInfoPlistKeys(string projectPath)

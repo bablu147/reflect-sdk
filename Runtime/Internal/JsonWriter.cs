@@ -43,13 +43,36 @@ namespace Reflect.Internal
         internal static string FormatDouble(double value)
         {
             if (double.IsNaN(value) || double.IsInfinity(value)) return "null";
-            return value.ToString("R", CultureInfo.InvariantCulture);
+            return ForceDecimal(value.ToString("R", CultureInfo.InvariantCulture));
         }
 
         internal static string FormatFloat(float value)
         {
             if (float.IsNaN(value) || float.IsInfinity(value)) return "null";
-            return value.ToString("R", CultureInfo.InvariantCulture);
+            return ForceDecimal(value.ToString("R", CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>
+        /// Force a decimal point onto a whole-number double/float (e.g. <c>"2"</c> →
+        /// <c>"2.0"</c>). The native cores read price/revenue/amount via a typed
+        /// double cast (<c>as? Double</c>); a JSON integer token deserializes to Int
+        /// and the cast drops it — silent revenue/price loss across the JNI/P-Invoke
+        /// JSON boundary. Integers (long/int) are NOT routed through here, so they
+        /// stay integers.
+        /// </summary>
+        private static string ForceDecimal(string s)
+        {
+            if (s.IndexOf('.') < 0 && s.IndexOf('e') < 0 && s.IndexOf('E') < 0) return s + ".0";
+            return s;
+        }
+
+        /// <summary>Serialize any supported value (map/list/scalar) to a JSON string —
+        /// the boundary encoder for native-core args.</summary>
+        public static string Serialize(object v)
+        {
+            var sb = new StringBuilder(256);
+            WriteValue(sb, v);
+            return sb.ToString();
         }
 
         public static void KvBool(StringBuilder sb, string key, bool value)
